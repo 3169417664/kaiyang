@@ -32,6 +32,8 @@ const (
 
 	minPasswordRunes = 8
 	maxPasswordBytes = 72 // bcrypt 硬限制
+
+	errDataSourceUnavailable = "数据源暂时不可用，请稍后重试"
 )
 
 type ctxKey int
@@ -309,7 +311,9 @@ func (s *Server) authStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	needs, err := pg.RBACNeedsBootstrap()
 	if err != nil {
-		writeErr(w, 500, "查询失败")
+		// 读失败必须 fail-closed：不能回答 initialized:false，否则前端会把用户
+		// 送到 /setup 覆盖已有管理员密码。
+		writeErr(w, 503, errDataSourceUnavailable)
 		return
 	}
 	writeJSON(w, 200, map[string]any{"initialized": !needs})
