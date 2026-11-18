@@ -108,7 +108,7 @@ skills/             内置技能库
 ## 快速开始
 
 > 依赖 **PostgreSQL 16+**；探索需配置 LLM（Anthropic / OpenAI / 兼容网关）。
-> 已发布 **v0.1.0**（Linux / macOS，含 `install.sh` 与 SHA256SUMS）。
+> 已发布 **v0.1.1**（安全加固版，Linux / macOS，含 `install.sh` 与 SHA256SUMS）。
 
 ### 一键安装（Linux）
 

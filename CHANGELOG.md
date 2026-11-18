@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-11-19
+
 ### 安全修复（2026-11-18 审计）
 
 - **RBAC**：`traffic:delete` / `intercept:approve` 独立权限；viewer 不能删流量；
