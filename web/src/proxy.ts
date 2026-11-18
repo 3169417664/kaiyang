@@ -2,22 +2,24 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
 const AUTH_PAGES = ["/login", "/setup"];
+const FORCE_PASSWORD_PAGE = "/force-change-password";
 
 export function proxy(request: NextRequest) {
   // Mock demo：无真实登录，放行所有页面（客户端 auth 守卫也会放行）。
   if (process.env.NEXT_PUBLIC_MOCK === "1") return NextResponse.next();
 
   const { pathname } = request.nextUrl;
-  const token = request.cookies.get("pojun_token")?.value;
+  const token = request.cookies.get("kaiyang_token")?.value ?? request.cookies.get("pojun_token")?.value;
   const isAuthPage = AUTH_PAGES.some((p) => pathname === p || pathname.startsWith(`${p}/`));
+  const isForcePassword = pathname === FORCE_PASSWORD_PAGE;
 
-  // 未登录 → 跳转登录页
+  // 未登录 → 跳转登录页（强制改密页也需要登录态）
   if (!token && !isAuthPage) {
     return NextResponse.redirect(new URL("/login", request.url));
   }
 
-  // 已登录时访问登录/初始化页 → 跳转主界面
-  if (token && isAuthPage) {
+  // 已登录时访问登录/初始化页 → 跳转主界面；强制改密页必须放行
+  if (token && isAuthPage && !isForcePassword) {
     return NextResponse.redirect(new URL("/function/tasks", request.url));
   }
 

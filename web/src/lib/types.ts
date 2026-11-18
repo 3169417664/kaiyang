@@ -1973,3 +1973,43 @@ export interface C2ConfigPatch {
   key?: string;
   iface?: string;
 }
+
+// ---- RBAC / 审计（KAIYANG Phase 1）----
+export interface RbacRole {
+  id: string;
+  name: string;
+  description: string;
+  scope: string;
+  is_system: boolean;
+}
+
+export interface RbacUser {
+  id: string;
+  username: string;
+  display_name: string;
+  enabled: boolean;
+  is_builtin: boolean;
+  must_change_password: boolean;
+  role_ids: string[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RbacMe {
+  user: Omit<RbacUser, "role_ids">;
+  roles: RbacRole[];
+  permissions: string[];
+  scope: string;
+}
+
+export interface AuditLog {
+  id: number;
+  created_at: string;
+  actor: string;
+  category: string;
+  action: string;
+  result: string;
+  ip: string;
+  message: string;
+  detail: Record<string, unknown>;
+}

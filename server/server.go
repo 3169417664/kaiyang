@@ -52,6 +52,9 @@ type Server struct {
 	dataDir  string       // browsable workspace root
 	jwtKey   atomic.Value // HS256 signing key ([]byte); replaceable to revoke sessions
 
+	// loginLimiter 是 IP + 账号双维度登录失败限流器（进程内，单实例）。
+	loginLimiter *loginLimiter
+
 	// 文档预览（v0.4.21）：Office/PDF 取样转图片，单 worker 串行（LibreOffice
 	// 的 UserInstallation 不能并发），queue 只放 artifact id。
 	previewOnce sync.Once
@@ -165,13 +168,14 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 	if err != nil {
 		log.Fatalf("[auth] JWT key: %v", err)
 	}
-	s := &Server{m: m, engine: NewEngine(m), ctx: ctx, skillDir: skillDir, keyDir: keyDir, dataDir: dataDir, chatBusy: map[string]bool{},
+	s := &Server{m: m, engine: NewEngine(m), ctx: ctx, skillDir: skillDir, keyDir: keyDir, dataDir: dataDir, loginLimiter: newLoginLimiter(), chatBusy: map[string]bool{},
 		chatCancel: map[string]context.CancelCauseFunc{}, triggerQ: map[string][]triggeredRun{},
 		triggerActive: map[string]int{}, triggerCfg: map[string]triggerBehavior{},
 		profChatAgents: map[int64]*agent.ChatAgent{},
 		provByProfile:  map[int64]*provEntry{}, llmHealth: newLLMHealthRegistry(m.pg),
 		taskAgents: map[string]*taskAgentBundle{}, archiveWake: make(chan struct{}, 1)}
 	s.jwtKey.Store(key)
+	s.bootstrapRBAC()
 	s.listeners = listener.NewManager()
 	agent.SetListenerManager(s.listeners)
 	agent.SetConnectBackResolver(func(port int) agent.ConnectBack {
@@ -707,6 +711,16 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/auth/init", s.authInit)
 	mux.HandleFunc("POST /api/auth/login", s.authLogin)
 	mux.HandleFunc("POST /api/auth/change-password", s.authChangePassword)
+
+	// RBAC / 审计
+	mux.HandleFunc("GET /api/rbac/me", s.rbacMe)
+	mux.HandleFunc("GET /api/rbac/metadata", s.rbacMetadata)
+	mux.HandleFunc("GET /api/rbac/users", s.rbacListUsers)
+	mux.HandleFunc("POST /api/rbac/users", s.rbacCreateUser)
+	mux.HandleFunc("PUT /api/rbac/users/{id}", s.rbacUpdateUser)
+	mux.HandleFunc("DELETE /api/rbac/users/{id}", s.rbacDeleteUser)
+	mux.HandleFunc("GET /api/rbac/roles", s.rbacListRoles)
+	mux.HandleFunc("GET /api/audit/logs", s.auditLogs)
 
 	mux.HandleFunc("GET /api/health", s.health)
 	mux.HandleFunc("GET /api/stats", s.stats)

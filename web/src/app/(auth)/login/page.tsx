@@ -21,6 +21,7 @@ import { auth } from "@/lib/auth";
 //      微交互（输入聚焦光晕、按钮渐变），全部纯 CSS 不引入外部资源。
 export default function LoginPage() {
   const router = useRouter();
+  const [username, setUsername] = useState("admin");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -69,9 +70,9 @@ export default function LoginPage() {
     setLoading(true);
     setError("");
     try {
-      const { token } = await api.login("POJUN", password);
+      const { token, must_change_password } = await api.login(username.trim(), password);
       auth.setToken(token);
-      window.location.replace("/function/tasks");
+      window.location.replace(must_change_password ? "/force-change-password" : "/function/tasks");
     } catch (e) {
       const err = e as Error & { status?: number };
       if (!err.status) {
@@ -166,9 +167,10 @@ export default function LoginPage() {
               <Label htmlFor="username" className="text-muted-foreground text-xs">用户名</Label>
               <Input
                 id="username"
-                value="POJUN"
-                readOnly
-                className="border-border/60 bg-muted/50 font-mono text-muted-foreground"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                autoComplete="username"
+                className="border-border/60 font-mono"
               />
             </div>
             <div className="space-y-1.5">
@@ -218,7 +220,7 @@ export default function LoginPage() {
             <Button
               type="submit"
               className="h-10 w-full font-medium tracking-wide transition-all duration-200 hover:shadow-md"
-              disabled={loading || !password || !agreed}
+              disabled={loading || !username.trim() || !password || !agreed}
             >
               {loading ? (
                 <span className="flex items-center gap-2">

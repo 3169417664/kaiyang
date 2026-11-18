@@ -94,56 +94,42 @@ func testKey(k []byte) *Server {
 	return s
 }
 
-// 登录防爆破：每 IP 10 分钟窗口内失败 5 次 → 锁 15 分钟；成功清零；
-// 其他 IP 不受牵连；全局阈值兜底 XFF 伪造。
-func TestLoginLimiterPerIPLockout(t *testing.T) {
-	l := &loginLimiter{fails: map[string][]time.Time{}, lockedUntil: map[string]time.Time{}}
-	for i := 0; i < loginMaxFailsPerIP; i++ {
-		l.recordFail("1.2.3.4")
+func testLoginPolicy() loginPolicy {
+	return loginPolicy{enabled: true, userThreshold: 5, ipThreshold: 5, window: time.Minute, cooldown: 15 * time.Minute}
+}
+
+// 登录防爆破：同一 IP + 账号连续失败达阈值后锁定；其他 IP/账号不受牵连；成功清零。
+func TestLoginLimiterLockoutAndReset(t *testing.T) {
+	l := newLoginLimiter()
+	pol := testLoginPolicy()
+	for i := 0; i < pol.ipThreshold; i++ {
+		l.fail("1.2.3.4", "alice", pol)
 	}
-	ok, wait := l.allow("1.2.3.4")
-	if ok {
+	locked, wait := l.locked("1.2.3.4", "alice")
+	if !locked {
 		t.Fatal("连续失败后应锁定")
 	}
-	if wait <= 0 || wait > loginLockoutPerIP {
-		t.Fatalf("锁定剩余时长=%v，应在 (0,%v] 内", wait, loginLockoutPerIP)
+	if wait <= 0 || wait > pol.cooldown {
+		t.Fatalf("锁定剩余时长=%v，应在 (0,%v] 内", wait, pol.cooldown)
 	}
-	if ok, _ := l.allow("5.6.7.8"); !ok {
-		t.Fatal("其他 IP 不应被牵连锁定")
+	if locked, _ := l.locked("5.6.7.8", "bob"); locked {
+		t.Fatal("其他 IP/账号不应被牵连锁定")
 	}
-	l.recordSuccess("1.2.3.4")
-	if ok, _ := l.allow("1.2.3.4"); !ok {
+	l.reset("1.2.3.4", "alice")
+	if locked, _ := l.locked("1.2.3.4", "alice"); locked {
 		t.Fatal("成功登录后应清零解锁")
 	}
 }
 
-// 成功后失败计数从零开始：不清零的话正常用户偶尔输错一次也会慢慢累积成锁。
-func TestLoginLimiterSuccessResetsWindow(t *testing.T) {
-	l := &loginLimiter{fails: map[string][]time.Time{}, lockedUntil: map[string]time.Time{}}
-	for i := 0; i < loginMaxFailsPerIP-1; i++ {
-		l.recordFail("9.9.9.9")
+// 账号维度：攻击者轮换 IP 刷同一账号，也应触发账号桶锁定。
+func TestLoginLimiterAccountBucket(t *testing.T) {
+	l := newLoginLimiter()
+	pol := testLoginPolicy()
+	for i := 0; i < pol.userThreshold; i++ {
+		l.fail(fmt.Sprintf("10.0.0.%d", i), "alice", pol)
 	}
-	l.recordSuccess("9.9.9.9")
-	for i := 0; i < loginMaxFailsPerIP-1; i++ {
-		l.recordFail("9.9.9.9")
-	}
-	if ok, _ := l.allow("9.9.9.9"); !ok {
-		t.Fatal("成功清零后未达阈值不应锁定")
-	}
-	l.recordFail("9.9.9.9")
-	if ok, _ := l.allow("9.9.9.9"); ok {
-		t.Fatal("清零后再次连续失败达阈值应锁定")
-	}
-}
-
-// 全局兜底：每 IP 各失败 1 次、凑满全局阈值 → 全局锁定（含全新 IP）。
-func TestLoginLimiterGlobalBackstop(t *testing.T) {
-	l := &loginLimiter{fails: map[string][]time.Time{}, lockedUntil: map[string]time.Time{}}
-	for i := 0; i < loginGlobalMaxFails; i++ {
-		l.recordFail(fmt.Sprintf("10.0.0.%d", i))
-	}
-	if ok, _ := l.allow("10.9.9.9"); ok {
-		t.Fatal("达到全局失败阈值后，全新 IP 也应被全局锁定兜住")
+	if locked, _ := l.locked("10.9.9.9", "alice"); !locked {
+		t.Fatal("同一账号跨 IP 连续失败达阈值应锁定")
 	}
 }
 

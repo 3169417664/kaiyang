@@ -1,5 +1,7 @@
 "use client";
 
+import * as React from "react";
+
 import Link from "next/link";
 
 import { useShallow } from "zustand/react/shallow";
@@ -15,7 +17,8 @@ import {
 } from "@/components/ui/sidebar";
 import { APP_CONFIG } from "@/config/app-config";
 import { useCurrentUser } from "@/hooks/use-current-user";
-import { sidebarItems } from "@/navigation/sidebar/sidebar-items";
+import { usePermissions } from "@/hooks/use-permissions";
+import { filterSidebarByPermissions, sidebarItems } from "@/navigation/sidebar/sidebar-items";
 import { usePreferencesStore } from "@/stores/preferences/preferences-provider";
 
 import { NavMain } from "./nav-main";
@@ -24,6 +27,11 @@ import { NavUser } from "./nav-user";
 
 export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
   const currentUser = useCurrentUser();
+  const { permissions } = usePermissions();
+  const visibleItems = React.useMemo(
+    () => filterSidebarByPermissions(sidebarItems, permissions),
+    [permissions],
+  );
   const { sidebarVariant, sidebarCollapsible, isSynced } = usePreferencesStore(
     useShallow((s) => ({
       sidebarVariant: s.sidebarVariant,
@@ -51,7 +59,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
         </SidebarMenu>
       </SidebarHeader>
       <SidebarContent>
-        <NavMain items={sidebarItems} />
+        <NavMain items={visibleItems} />
         {/* <NavDocuments items={data.documents} /> */}
         {/* <NavSecondary items={data.navSecondary} className="mt-auto" /> */}
       </SidebarContent>
