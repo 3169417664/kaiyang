@@ -152,17 +152,17 @@ func (d *DB) SaveReportSettings(s *ReportSettings) error {
 }
 
 type ReportRecord struct {
-	ID        int64      `json:"id"`
-	TaskID    *int64     `json:"task_id,omitempty"`
-	TaskDesc  string     `json:"task_desc"`
-	Filename  string     `json:"filename"`
-	Path      string     `json:"-"`
-	Size      int64      `json:"size"`
-	Company   string     `json:"company"`
-	Status    string     `json:"status"`
-	Error     string     `json:"error,omitempty"`
-	CreatedAt time.Time  `json:"created_at"`
-	StartedAt *time.Time `json:"started_at,omitempty"`
+	ID         int64      `json:"id"`
+	TaskID     *int64     `json:"task_id,omitempty"`
+	TaskDesc   string     `json:"task_desc"`
+	Filename   string     `json:"filename"`
+	Path       string     `json:"-"`
+	Size       int64      `json:"size"`
+	Company    string     `json:"company"`
+	Status     string     `json:"status"`
+	Error      string     `json:"error,omitempty"`
+	CreatedAt  time.Time  `json:"created_at"`
+	StartedAt  *time.Time `json:"started_at,omitempty"`
 	FinishedAt *time.Time `json:"finished_at,omitempty"`
 }
 
