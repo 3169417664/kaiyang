@@ -85,6 +85,16 @@ type Task struct {
 	// autopilot 是自主推进开关的运行态镜像（每次现查，关掉开关下一次规划/执行
 	// 就回到普通任务语义）。持久化在 tasks.autopilot。
 	autopilot atomic.Bool
+
+	// KAIYANG 审核 / 场景模板
+	ReviewEnabled         bool   `json:"review_enabled"`
+	ReviewAuto            bool   `json:"review_auto"`
+	WorkerCount           int    `json:"worker_count"`
+	AssetMode             string `json:"asset_mode"`
+	PreAgent              string `json:"pre_agent,omitempty"`
+	PlannerPromptOverride string `json:"planner_prompt_override,omitempty"`
+	WorkerPromptOverride  string `json:"worker_prompt_override,omitempty"`
+	CreatedBy             string `json:"created_by,omitempty"`
 }
 
 // AutopilotEnabled reports whether this task is running in autopilot mode.
@@ -1188,7 +1198,11 @@ func taskFromPG(pt *pgdb.Task, store *pgdb.ExplorationStore, ic *intercept.Inter
 		TimeoutSeconds: pt.TimeoutSeconds, PlanHeartbeatSeconds: pt.PlanHeartbeatSeconds,
 		CoverageEnabled: pt.CoverageEnabled,
 		FirstRunAt:      unixOrZero(pt.FirstRunAt), DeadlineAt: unixOrZero(pt.DeadlineAt),
-		Store: store, Guard: guard.NewWithInterceptor(ic), notify: make(chan struct{}, 1),
+		ReviewEnabled: pt.ReviewEnabled, ReviewAuto: pt.ReviewAuto,
+		WorkerCount: pt.WorkerCount, AssetMode: pt.AssetMode, PreAgent: pt.PreAgent,
+		PlannerPromptOverride: pt.PlannerPromptOverride, WorkerPromptOverride: pt.WorkerPromptOverride,
+		CreatedBy: pt.CreatedBy,
+		Store:     store, Guard: guard.NewWithInterceptor(ic), notify: make(chan struct{}, 1),
 	}
 	t.autopilot.Store(pt.Autopilot)
 	return t

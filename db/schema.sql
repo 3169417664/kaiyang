@@ -1590,3 +1590,168 @@ CREATE TABLE IF NOT EXISTS finding_updates (
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_finding_updates_finding ON finding_updates(finding_id, id DESC);
+
+-- =====================================================================
+-- §FUSION  KAIYANG 缝合区（只追加，不要重排既有 DDL）
+-- =====================================================================
+-- 约定：
+--   1. 所有新增表/列/索引追加在本段之后；PR 只改自己的子段。
+--   2. CHECK 约束变更必须用 DO 块探测旧定义后重建。
+--   3. 一次性数据迁移放 db/migrate_fusion.go，用 settings flag 幂等门控。
+--
+-- 规划中的子段：
+--   §FUSION-A  RBAC / audit_logs
+--   §FUSION-B  审核状态机 / planner_templates / worker_templates
+--   §FUSION-C  报告 / finding_enrichment / reproduction
+--   §FUSION-D  知识库
+--   §FUSION-E  资产凭据 / 内网拓扑
+
+-- ── §FUSION-A  RBAC / 审计 ────────────────────────────────────────────
+-- 三系统角色：admin / operator / viewer。scope 列保留但当前不做资源隔离
+-- （所有登录用户看到同一份任务/资产数据），后续需要时再用。
+CREATE TABLE IF NOT EXISTS rbac_users (
+    id                   TEXT PRIMARY KEY,
+    username             TEXT NOT NULL UNIQUE,
+    display_name         TEXT NOT NULL DEFAULT '',
+    password_hash        TEXT NOT NULL,
+    enabled              BOOLEAN NOT NULL DEFAULT true,
+    is_builtin           BOOLEAN NOT NULL DEFAULT false,
+    token_version        INT NOT NULL DEFAULT 0,
+    must_change_password BOOLEAN NOT NULL DEFAULT false,
+    created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at           TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_rbac_users_name ON rbac_users(username);
+
+CREATE TABLE IF NOT EXISTS rbac_roles (
+    id          TEXT PRIMARY KEY,
+    name        TEXT NOT NULL UNIQUE,
+    description TEXT NOT NULL DEFAULT '',
+    scope       TEXT NOT NULL DEFAULT 'all',
+    is_system   BOOLEAN NOT NULL DEFAULT false,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS rbac_permissions (
+    key         TEXT PRIMARY KEY,
+    description TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS rbac_role_permissions (
+    role_id        TEXT NOT NULL REFERENCES rbac_roles(id) ON DELETE CASCADE,
+    permission_key TEXT NOT NULL,
+    PRIMARY KEY (role_id, permission_key)
+);
+
+CREATE TABLE IF NOT EXISTS rbac_user_roles (
+    user_id TEXT NOT NULL REFERENCES rbac_users(id) ON DELETE CASCADE,
+    role_id TEXT NOT NULL REFERENCES rbac_roles(id) ON DELETE CASCADE,
+    PRIMARY KEY (user_id, role_id)
+);
+CREATE INDEX IF NOT EXISTS idx_rbac_user_roles_user ON rbac_user_roles(user_id);
+
+CREATE TABLE IF NOT EXISTS audit_logs (
+    id         BIGSERIAL PRIMARY KEY,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    actor      TEXT NOT NULL DEFAULT '',
+    category   TEXT NOT NULL DEFAULT '',
+    action     TEXT NOT NULL DEFAULT '',
+    result     TEXT NOT NULL DEFAULT 'success',
+    ip         TEXT NOT NULL DEFAULT '',
+    message    TEXT NOT NULL DEFAULT '',
+    detail     JSONB NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_id ON audit_logs(id DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_actor ON audit_logs(actor);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_category ON audit_logs(category, id DESC);
+
+-- 任务创建者只用于审计归因，不做可见性隔离。
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS created_by TEXT NOT NULL DEFAULT '';
+
+-- ── §FUSION-B  审核状态机 / 场景模板 ───────────────────────────────────
+-- 意图新增 proposed 待审态；只在 intent 分支增加，其余 kind 约束保持不变。
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid='exploration_nodes'::regclass
+          AND conname='ck_node_state'
+          AND pg_get_constraintdef(oid) NOT LIKE '%proposed%'
+    ) THEN
+        ALTER TABLE exploration_nodes DROP CONSTRAINT ck_node_state;
+        ALTER TABLE exploration_nodes ADD CONSTRAINT ck_node_state CHECK (
+            (kind='begin'   AND state IN ('open')) OR
+            (kind='intent'  AND state IN ('open','proposed','running','paused','done','blocked','exhausted','stopped','deleted')) OR
+            (kind='goal'    AND state IN ('open','met','abandoned')) OR
+            (kind='fact'    AND state IN ('confirmed','dismissed','origin')) OR
+            (kind='finding' AND state IN ('confirmed','dismissed')) OR
+            (kind='hint'    AND state IN ('active','consumed')) OR
+            (kind='digest'  AND state IN ('active','superseded'))
+        );
+    END IF;
+END $$;
+
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS review_enabled BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS review_auto BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS planner_prompt_override TEXT NOT NULL DEFAULT '';
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS worker_prompt_override TEXT NOT NULL DEFAULT '';
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS worker_count INT NOT NULL DEFAULT 0;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS asset_mode TEXT NOT NULL DEFAULT 'pentest';
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS pre_agent TEXT NOT NULL DEFAULT '';
+
+ALTER TABLE task_categories ADD COLUMN IF NOT EXISTS default_review_enabled BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE task_categories ADD COLUMN IF NOT EXISTS default_planner_template_id BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE task_categories ADD COLUMN IF NOT EXISTS default_worker_template_id BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE task_categories ADD COLUMN IF NOT EXISTS default_description TEXT NOT NULL DEFAULT '';
+ALTER TABLE task_categories ADD COLUMN IF NOT EXISTS asset_mode TEXT NOT NULL DEFAULT 'pentest';
+ALTER TABLE task_categories ADD COLUMN IF NOT EXISTS seed_first_intent BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE task_categories ADD COLUMN IF NOT EXISTS seed_executor TEXT NOT NULL DEFAULT '';
+
+CREATE TABLE IF NOT EXISTS planner_templates (
+    id         BIGSERIAL PRIMARY KEY,
+    name       TEXT NOT NULL,
+    nkey       TEXT NOT NULL UNIQUE,
+    body       TEXT NOT NULL,
+    builtin    BOOLEAN NOT NULL DEFAULT false,
+    is_default BOOLEAN NOT NULL DEFAULT false,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_planner_templates_default ON planner_templates(is_default) WHERE is_default;
+
+CREATE TABLE IF NOT EXISTS worker_templates (
+    id         BIGSERIAL PRIMARY KEY,
+    name       TEXT NOT NULL,
+    nkey       TEXT NOT NULL UNIQUE,
+    body       TEXT NOT NULL,
+    builtin    BOOLEAN NOT NULL DEFAULT false,
+    is_default BOOLEAN NOT NULL DEFAULT false,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_worker_templates_default ON worker_templates(is_default) WHERE is_default;
+
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS executor_key TEXT;
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS planner_controlled BOOLEAN NOT NULL DEFAULT true;
+
+-- ── §FUSION-F  Finding 派发 / 内网子任务去重 ─────────────────────────────
+CREATE TABLE IF NOT EXISTS finding_agent_invocations (
+    agent_key       TEXT NOT NULL,
+    finding_id      BIGINT NOT NULL REFERENCES findings(id) ON DELETE CASCADE,
+    task_id         BIGINT NOT NULL,
+    reason          TEXT NOT NULL DEFAULT '',
+    conversation_id BIGINT,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (agent_key, finding_id)
+);
+CREATE INDEX IF NOT EXISTS idx_finding_invocations_pending
+    ON finding_agent_invocations(created_at) WHERE conversation_id IS NULL;
+
+CREATE TABLE IF NOT EXISTS task_dispatch_targets (
+    asset_key  TEXT PRIMARY KEY,
+    task_id    BIGINT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    finding_id BIGINT NOT NULL REFERENCES findings(id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_task_dispatch_targets_task ON task_dispatch_targets(task_id);

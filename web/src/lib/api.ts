@@ -19,6 +19,7 @@ import type {
   AssetInterceptRule,
   AssetInterceptRuleInput,
   Audit,
+  AuditLog,
   BatchCategoryItem,
   BatchControlItem,
   ChatAttachment,
@@ -52,6 +53,9 @@ import type {
   InstallBatchResult,
   InstallJob,
   ProxyCheckResult,
+  RbacMe,
+  RbacRole,
+  RbacUser,
   IntentAsset,
   InterceptApprovalFilter,
   InterceptApprovalRow,
@@ -127,7 +131,7 @@ import type {
 
 function getToken(): string | null {
   if (typeof window === "undefined") return null;
-  return localStorage.getItem("pojun_token");
+  return localStorage.getItem("kaiyang_token") ?? localStorage.getItem("pojun_token");
 }
 
 export async function http<T>(path: string, init?: RequestInit): Promise<T> {
@@ -149,11 +153,25 @@ export async function http<T>(path: string, init?: RequestInit): Promise<T> {
   });
   if (r.status === 401) {
     if (typeof window !== "undefined") {
+      localStorage.removeItem("kaiyang_token");
       localStorage.removeItem("pojun_token");
+      document.cookie = "kaiyang_token=; path=/; max-age=0";
       document.cookie = "pojun_token=; path=/; max-age=0";
       window.location.href = "/login";
     }
     throw new Error("未授权");
+  }
+  if (r.status === 403) {
+    let msg = "";
+    try {
+      const payload = (await r.clone().json()) as { error?: unknown };
+      if (typeof payload.error === "string") msg = payload.error;
+    } catch {
+      // ignore
+    }
+    if (msg.includes("首次登录需先修改密码") && typeof window !== "undefined") {
+      window.location.href = "/force-change-password";
+    }
   }
   if (!r.ok) {
     const fallback = `${init?.method ?? "GET"} ${path}: ${r.status}`;
@@ -287,10 +305,59 @@ export const api = {
 
   // ---- auth ----
   authStatus: () => get<{ initialized: boolean }>("/auth/status"),
-  login: (username: string, password: string) => post<{ token: string }>("/auth/login", { username, password }),
+  login: (username: string, password: string) =>
+    post<{ token: string; must_change_password?: boolean }>("/auth/login", { username, password }),
   initPassword: (password: string) => post<{ token: string }>("/auth/init", { password }),
   changePassword: (oldPassword: string, newPassword: string) =>
-    post<{ ok: boolean }>("/auth/change-password", { old_password: oldPassword, new_password: newPassword }),
+    post<{ ok: boolean; token?: string }>("/auth/change-password", { old_password: oldPassword, new_password: newPassword }),
+
+  // ---- RBAC / audit ----
+  rbacMe: () => get<RbacMe>("/rbac/me"),
+  rbacUsers: () => get<{ users: RbacUser[] }>("/rbac/users").then((r) => r.users ?? []),
+  rbacCreateUser: (input: {
+    username: string;
+    display_name?: string;
+    password: string;
+    enabled?: boolean;
+    role_ids: string[];
+  }) => post<{ user: RbacUser }>("/rbac/users", input),
+  rbacUpdateUser: (id: string, input: { display_name?: string; enabled?: boolean; role_ids?: string[]; password?: string }) =>
+    put<{ ok: boolean }>(`/rbac/users/${encodeURIComponent(id)}`, input),
+  rbacDeleteUser: (id: string) => del<{ ok: boolean }>(`/rbac/users/${encodeURIComponent(id)}`),
+  rbacRoles: () => get<{ roles: RbacRole[] }>("/rbac/roles").then((r) => r.roles ?? []),
+  auditLogs: (params: { category?: string; actor?: string; action?: string; result?: string; limit?: number; offset?: number } = {}) => {
+    const q = new URLSearchParams();
+    for (const [k, v] of Object.entries(params)) {
+      if (v !== undefined && v !== "") q.set(k, String(v));
+    }
+    const s = q.toString();
+    return get<{ logs: AuditLog[]; total: number }>(`/audit/logs${s ? `?${s}` : ""}`);
+  },
+
+  // ---- review ----
+  reviewProposed: (taskId: string) =>
+    get<{ intents: Array<{ id: number; summary?: string; priority?: number; pending_executor?: string; review_note?: string; content_version: number; created_at: number }> }>(
+      `/tasks/${encodeURIComponent(taskId)}/review/proposed`,
+    ).then((r) => r.intents ?? []),
+  reviewApprove: (taskId: string, intentId: number, version?: number) =>
+    post<{ ok: boolean }>(`/tasks/${encodeURIComponent(taskId)}/review/${intentId}/approve`, version == null ? {} : { expected_version: version }),
+  reviewReject: (taskId: string, intentId: number, version?: number, note = "") =>
+    post<{ ok: boolean }>(`/tasks/${encodeURIComponent(taskId)}/review/${intentId}/reject`, { expected_version: version, note }),
+  reviewConfig: (taskId: string, enabled: boolean, auto: boolean) =>
+    put<{ ok: boolean; enabled: boolean; auto: boolean }>(`/tasks/${encodeURIComponent(taskId)}/review/config`, { enabled, auto }),
+
+  // ---- prompt templates ----
+  promptTemplates: (kind: "planner" | "worker") =>
+    get<{ templates: Array<{ id: number; name: string; nkey: string; body: string; builtin: boolean; is_default: boolean }> }>(
+      `/${kind}-templates`,
+    ).then((r) => r.templates ?? []),
+  createPromptTemplate: (kind: "planner" | "worker", input: { name: string; nkey: string; body: string }) =>
+    post<{ template: unknown }>(`/${kind}-templates`, input),
+  updatePromptTemplate: (kind: "planner" | "worker", id: number, input: { name: string; body: string }) =>
+    put<{ ok: boolean }>(`/${kind}-templates/${id}`, input),
+  deletePromptTemplate: (kind: "planner" | "worker", id: number) => del<{ ok: boolean }>(`/${kind}-templates/${id}`),
+  setDefaultPromptTemplate: (kind: "planner" | "worker", id: number) =>
+    post<{ ok: boolean }>(`/${kind}-templates/${id}/default`, {}),
 
   // ---- tasks ----
   tasks: () =>
@@ -310,6 +377,15 @@ export const api = {
     coverageEnabled?: boolean;
     interceptRules?: AssetInterceptRuleInput[];
     authConfig?: TaskAuthConfigInput;
+    reviewEnabled?: boolean;
+    reviewAuto?: boolean;
+    workerCount?: number;
+    assetMode?: string;
+    preAgent?: string;
+    plannerTemplateId?: number;
+    workerTemplateId?: number;
+    plannerPrompt?: string;
+    workerPrompt?: string;
   }) =>
     post<Task>("/tasks", {
       name: input.name ?? "",
@@ -326,6 +402,15 @@ export const api = {
       intercept_rules: input.interceptRules ?? [], // 任务级资产拦截规则
       // 任务级登录凭据（v0.4.8）：密码/TOTP 只进 DB，API 永不回传。
       auth_config: input.authConfig?.enabled ? input.authConfig : undefined,
+      review_enabled: input.reviewEnabled,
+      review_auto: input.reviewAuto,
+      worker_count: input.workerCount,
+      asset_mode: input.assetMode,
+      pre_agent: input.preAgent,
+      planner_template_id: input.plannerTemplateId,
+      worker_template_id: input.workerTemplateId,
+      planner_prompt: input.plannerPrompt,
+      worker_prompt: input.workerPrompt,
     }),
   taskCategories: () => get<{ categories: TaskCategory[] }>("/task-categories").then((r) => arr(r.categories)),
   updateTask: (id: string, input: { name?: string; pinned?: boolean }) => patch<Task>(`/tasks/${id}`, input),

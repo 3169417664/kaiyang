@@ -4,6 +4,62 @@
 
 ## [Unreleased]
 
+### 新增（KAIYANG Phase 4：自定义执行器 + Finding 编排）
+
+- **自定义执行器**：`agents.executor_key` / `planner_controlled`；`tasks.pre_agent` 种子意图
+  以 proposed + executor=<key> 落库，由 pre_agent 阶段领取执行；默认 worker 的 Frontier
+  跳过带 executor 的意图。
+- **执行器工具**：`list_intents`、`claim_executor_intent`；执行链复用 Worker，保留执行期
+  安全/证据/审批/录制。
+- **Finding 显式派发**：`dispatch_finding_to_agent` + `finding_agent_invocations`，
+  同一 agent+finding 幂等，10 分钟补发。
+- **内网派发去重**：`task_dispatch_targets`、`check_internal_asset_task`、`append_finding_to_task`；
+  预置 `vuln_dispatcher`。
+- **trace_cleaner**：预置痕迹清理 Agent，按 `[投放]` 事实工作，保留「列计划→用户同意→逐项执行」，
+  不依赖 godzilla/shell_test。
+- **worker 投放事实契约**：[投放] 事实强制记录主机/路径/账号/时间/清理方式。
+
+### 新增（KAIYANG Phase 3：审核 + 场景模板）
+
+- **意图审核状态机**：`proposed` 待审态、`review_status`、`content_version` CAS；
+  审核开启时 `add_intent` 硬拒绝，必须用 `add_review_intent` 送审。
+- **人工审核闭环**：待审列表 / 批准 / 驳回；批准后转 open 并唤醒 planner；
+  驳回保留 proposed，planner 可用 `update_intent` 修订后自动重送审。
+- **审核工具**：`add_review_intent`、`list_intents`、`update_intent`、`cancel_intent`。
+- **任务级审核开关**：`PUT /api/tasks/{id}/review/config`；任务详情新增「审核」Tab。
+- **场景模板**：6 个场景分类（外网/内网/权限提升/漏洞利用/漏洞挖掘/代码审计），
+  内网/提权/漏洞利用默认开审；planner/worker 模板库 + 四级提示词链
+  （任务快照 > 全局覆盖 > 模板默认 > 内置默认），保留 Pojun 红队硬尾。
+- **模板管理页**：`/system/templates`，支持新建/编辑/设默认/删除（内置不可删）。
+- **建任务字段**：审核开关、自动处置、任务级 worker 数、资产模式，分类预设自动带出。
+
+### 新增（KAIYANG Phase 2：轨迹与可观测性）
+
+- **任务轨迹 Tab**：`GET /api/exploration/activity/history?session=all` 合并任务下
+  全部 agent 的活动流；前端新增合并时间线、minimap 密度导航、步骤详情抽屉，
+  按 agent/步骤类型筛选，SSE 实时追加。
+- **工具配对按 worker 作用域**：合并多 agent 时间线时，`tool_use_id` 以
+  `worker + id` 配对，避免跨 worker 错配；`Transcript` 支持强制显示执行者 chip。
+- **访问日志中间件**：记录 4xx/5xx 与 >2s 慢请求，注入请求 ID；兼容 SSE `Flush`。
+- **xlog 四级日志**：`KAIYANG_LOG_LEVEL` / `POJUN_LOG_LEVEL` / `ARTEX_LOG_LEVEL`
+  兼容，支持 debug/info/warn/error 阈值。
+- **请求体限长**：认证与 RBAC 端点改用 `decodeJSON`，超大请求返回 413。
+- **工作区敏感文件保护**：`jwt.key`、`.env`、`config.json`、`*.pem/*.key` 等
+  禁止通过工作区读取/下载。
+
+### 新增（KAIYANG Phase 1：多用户底座）
+
+- **多用户 RBAC**：新增 `rbac_users/roles/permissions/role_permissions/user_roles`，
+  固定 admin / operator / viewer 三角色；权限表 + 路由级强制，未映射路由默认 admin-only。
+- **认证重写**：JWT 携带 `sub/usr/ver`，改密/停用只递增该用户 `token_version`，
+  不再轮换全局 JWT key；会话改为 480 分钟滑动续期。
+- **首页迁移**：旧单管理员密码自动迁移为内置 `admin`，首次登录强制改密；
+  `POJUN`/`ARTEX` 不再作为登录别名。
+- **登录防护**：IP + 账号双维度滑动窗口锁定；可信代理之外的 XFF 一律不采信。
+- **审计**：登录、用户管理、改密等写 `audit_logs`；admin 与 operator 可读。
+- **前端**：新增「用户与角色」「审计日志」「首次登录改密」页面；侧边栏按权限过滤；
+  登录页用户名可输入。
+
 ## [0.4.82] - 2026-11-18
 
 ### 新增（issue #24 第二项：session_login 连续失败熔断）

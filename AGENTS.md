@@ -88,3 +88,15 @@ docs/           设计文档 + 阶段报告（按日期命名的是阶段性快�
 `docs/模型路由策略.md`（模型选型）> `docs/红队能力建设-2026-10-30.md` > `docs/产品优化清单-2026-10-29.md`
 （历史，35% 完成度快照）。部署与排障：`docs/部署手册.md`（含 LAN 源安装配方）。
 接手背景：`docs/项目交接文档.md`。
+
+## 7. KAIYANG 协作规则
+
+- 分支：`main`（可发布，保护）、`develop`（集成，保护）、`feature/*`、`fix/*`、`chore/*`、`docs/*`、`release/*`、`hotfix/*`。禁止直推 main/develop。
+- 提交：Conventional Commits，scope 用模块名；一个 PR 只做一个模块/阶段子项。
+- 数据库迁移：只追加自己的 `§FUSION-*` 段；不改既有 DDL 顺序；CHECK 变更用 DO 块；一次性迁移必须有 settings flag。
+- 工具：新增领域工具必须同时注册到 `PlannerTools` / `WorkerTools` / `MainAgentTools` / `BuiltinToolSeeds`；纯读工具用 `readTool/readExpTool`。
+- 权限：新增路由必须补 `permissionForRequest` 映射；未映射默认 admin-only。
+- 提示词：只替换模板正文，Pojun 红队硬尾由代码追加，不能被模板覆盖。
+- 品牌：产品名 `开阳 KAIYANG`；module 为 `github.com/3169417664/kaiyang`；二进制 `kaiyang`。
+- 报告：继续手写 OOXML；`report/delivery/` 只组合 `report.Docx`，不引第三方文档库。
+- 环境变量暂时保留 `POJUN_*` 兼容存量部署；新变量用 `KAIYANG_*` 并提供回退。

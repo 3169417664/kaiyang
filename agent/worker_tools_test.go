@@ -13,7 +13,7 @@ import (
 // 而真正动手的 worker 看不到它——实测新装的一批工具（dalfox/feroxbuster/
 // chisel/gitleaks…）一次都没被用起来，agent 只会 python3 + curl + ssh。
 func TestWorkerSystemIncludesHostTools(t *testing.T) {
-	sys := workerSystem("127.0.0.1:8788", "", "/opt/pojun/data", "/tmp/run")
+	sys := workerSystem("worker", "127.0.0.1:8788", "", "/opt/pojun/data", "/tmp/run", "")
 	if !strings.Contains(sys, "本机可用工具") {
 		t.Fatal("worker 的 system prompt 里应注入宿主工具清单")
 	}

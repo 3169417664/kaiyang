@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -469,14 +470,19 @@ type Agent struct {
 	TriggerRunMode     string `json:"trigger_run_mode"`
 	TriggerMergeMode   string `json:"trigger_merge_mode"`
 	TriggerMaxParallel int    `json:"trigger_max_parallel"`
+
+	// KAIYANG：声明 executor_key 的自定义 Agent 可领取并执行意图；
+	// PlannerControlled=false 时首个意图执行期间不受 Planner 控制。
+	ExecutorKey       string `json:"executor_key,omitempty"`
+	PlannerControlled bool   `json:"planner_controlled"`
 }
 
-const agentCols = `id,key,name,COALESCE(description,''),role,builtin,enabled,COALESCE(max_turns,0),COALESCE(run_seconds,600),COALESCE(web_search,false),COALESCE(interactive_shell,false),COALESCE(local_exec,true),COALESCE(wrapup_prompt,''),COALESCE(wrapup_max_turns,0),COALESCE(task_timeout_wrapup_prompt,''),COALESCE(task_timeout_wrapup_max_turns,0),COALESCE(trigger_run_mode,'serial'),COALESCE(trigger_merge_mode,'all'),COALESCE(trigger_max_parallel,5),llm_profile_id`
+const agentCols = `id,key,name,COALESCE(description,''),role,builtin,enabled,COALESCE(max_turns,0),COALESCE(run_seconds,600),COALESCE(web_search,false),COALESCE(interactive_shell,false),COALESCE(local_exec,true),COALESCE(wrapup_prompt,''),COALESCE(wrapup_max_turns,0),COALESCE(task_timeout_wrapup_prompt,''),COALESCE(task_timeout_wrapup_max_turns,0),COALESCE(trigger_run_mode,'serial'),COALESCE(trigger_merge_mode,'all'),COALESCE(trigger_max_parallel,5),COALESCE(executor_key,''),COALESCE(planner_controlled,true),llm_profile_id`
 
 func scanAgent(sc interface{ Scan(...any) error }) (*Agent, error) {
 	var a Agent
 	var prof sql.NullInt64 // llm_profile_id 可空:未绑定时为 NULL
-	err := sc.Scan(&a.ID, &a.Key, &a.Name, &a.Description, &a.Role, &a.Builtin, &a.Enabled, &a.MaxTurns, &a.RunSecs, &a.WebSearch, &a.InteractiveShell, &a.LocalExec, &a.WrapupPrompt, &a.WrapupMaxTurns, &a.TaskTimeoutWrapupPrompt, &a.TaskTimeoutWrapupMaxTurns, &a.TriggerRunMode, &a.TriggerMergeMode, &a.TriggerMaxParallel, &prof)
+	err := sc.Scan(&a.ID, &a.Key, &a.Name, &a.Description, &a.Role, &a.Builtin, &a.Enabled, &a.MaxTurns, &a.RunSecs, &a.WebSearch, &a.InteractiveShell, &a.LocalExec, &a.WrapupPrompt, &a.WrapupMaxTurns, &a.TaskTimeoutWrapupPrompt, &a.TaskTimeoutWrapupMaxTurns, &a.TriggerRunMode, &a.TriggerMergeMode, &a.TriggerMaxParallel, &a.ExecutorKey, &a.PlannerControlled, &prof)
 	if err == nil && prof.Valid {
 		v := prof.Int64
 		a.LLMProfileID = &v
@@ -600,6 +606,13 @@ func (d *DB) SetAgentMaxTurns(key string, maxTurns int) error {
 // SetAgentLLMProfile binds an agent to a specific LLM profile (id != nil), or clears
 // the binding (id == nil) so the agent follows the task/conversation pin, else the
 // global active profile. Precedence at runtime: agent binding → task/conv pin → active.
+// SetAgentExecutor 设置自定义 Agent 的 executor_key 与 Planner 控制开关。
+func (d *DB) SetAgentExecutor(key, executorKey string, plannerControlled bool) error {
+	_, err := d.Exec(`UPDATE agents SET executor_key=NULLIF($2,''), planner_controlled=$3, updated_at=now() WHERE key=$1`,
+		key, strings.TrimSpace(executorKey), plannerControlled)
+	return err
+}
+
 func (d *DB) SetAgentLLMProfile(key string, id *int64) error {
 	tx, err := d.Begin()
 	if err != nil {

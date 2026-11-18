@@ -46,6 +46,8 @@ type Planner struct {
 	noaEnabledFn         func() bool                            // resolver: use experimental noa compaction? (nil = off)
 	maxTokensFn          func() int                             // resolver: per-reply output cap (nil/0 = send no cap)
 	compactor            *Compactor                             // cold-node compaction (§7); nil = disabled
+	taskPromptOverride   string                                 // 任务级提示词快照（最高优先级）
+	reviewEnabledFn      func() bool                            // 任务是否开启意图审核
 
 	// todos keeps ONE plan-scratchpad per task (keyed by exploration id) so the
 	// planner's multi-step plan survives across wake-ups — each Plan() is a fresh
@@ -66,6 +68,12 @@ func (p *Planner) SetScopeFlags(scopeGuard, scopeInheritWrites, crossTaskNotifyD
 }
 
 func (p *Planner) SetCompactionWindowResolver(fn func() int) { p.windowFn = fn }
+
+// SetTaskPromptOverride 注入任务级提示词快照（创建任务时从模板解析）。
+func (p *Planner) SetTaskPromptOverride(body string) { p.taskPromptOverride = body }
+
+// SetReviewEnabled 注入任务级审核开关（每轮读取）。
+func (p *Planner) SetReviewEnabled(fn func() bool) { p.reviewEnabledFn = fn }
 
 // SetCompactor wires the cold-node compactor (cold-digest §7). Called each
 // planner wake-up to advance the round counter, maintain cold stamps, and
@@ -421,8 +429,14 @@ const plannerDefaultTmpl = `你是一个网络安全平台授权渗透测试系�
 
 不重复、不硬凑；但目标未达成、又有未覆盖且更深的打法时，该派就派。简洁、聚焦、高效。`
 
-func plannerSystem(goal, dataDir, workDir string) string {
-	body := renderSystem("planner", plannerDefaultTmpl, PlannerVars{Goal: goal, DataDir: dataDir, Now: nowStr()})
+func plannerSystem(goal, dataDir, workDir, taskOverride string) string {
+	def := plannerDefaultTmpl
+	if PlannerTemplateDefault != nil {
+		if b := PlannerTemplateDefault(); strings.TrimSpace(b) != "" {
+			def = b
+		}
+	}
+	body := renderSystemWithOverride("planner", def, PlannerVars{Goal: goal, DataDir: dataDir, Now: nowStr()}, taskOverride)
 	// 作业硬尾巴（v0.4.63）：漏洞覆盖矩阵/纵深优先 + 授权边界复核。
 	return body + artifactSpec(workDir) + coverageMatrixPlannerGuidance + scopeVerifyPlannerGuidance + execFacePlannerGuidance +
 		engagementFraming + impactOrchestrationGuidance
@@ -443,6 +457,7 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	// runs in a detached goroutine so it never adds latency to this round.
 	p.compactor.OnPlannerRound(ctx, ts)
 	tsx := NewToolSet(ts, "planner")
+	tsx.SetReviewEnabled(p.reviewEnabledFn)
 	tsx.SetFindingRecorder(p.findingRecorder)
 	tsx.SetScopeFlags(p.scopeGuard, p.scopeInheritWrites, p.crossTaskNotifyDedup)
 	if p.intentQueue != nil {
@@ -490,7 +505,14 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	// （worker 有注入所以从不报错，问题只在规划者/主 Agent 侧复现）。
 	tsx.SetRunDir(taskDir)
 	ctx = intercept.WithReviewContext(ctx, taskDir, intercept.ReviewBackground{})
-	sysBody := plannerSystem(goal, p.workDir, taskDir)
+	sysBody := plannerSystem(goal, p.workDir, taskDir, p.taskPromptOverride)
+	// 审核模式：代码级追加，模板/提示词改不掉；工具层还会硬拒绝 add_intent。
+	if p.reviewEnabledFn != nil && p.reviewEnabledFn() {
+		sysBody += "\n\n【审核模式（本任务已开启意图审核）】\n" +
+			"提交新意图必须使用 add_review_intent（禁止 add_intent，直投会被硬拒绝）。" +
+			"意图会先进入 proposed 待审池，人工批准后才转 open 并被执行。" +
+			"如需修订被驳回的意图，用 list_intents(state=rejected) 查看后用 update_intent 修订并自动重送审。"
+	}
 	if p.wantConstraints() {
 		sysBody += constraintBlock(ts) // 操作约束(若有)注入系统提示,框定探索边界
 	}

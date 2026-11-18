@@ -107,3 +107,11 @@ const execFacePlannerGuidance = `
 - 攻击链续跳已自动派发继任意图（report_finding 回执里的 chain_intent_id）——不要为同一维度重复派单；如需变体，改参数或换入口。
 - list_facts(q=凭据/token/shell) 复用已拿到的弹药；同一资产同一维度 ≥2 次零产出必须换维度。
 `
+
+// footholdFactGuidance 是「投放事实」硬契约：清理 Agent 只能依据这些事实工作。
+const footholdFactGuidance = `
+
+【投放事实（强制）】
+- 任何在目标主机落地的动作（WebShell、上传文件、创建账号、隧道/代理、计划任务、修改配置）都必须用 record_fact 写一条以 [投放] 开头的事实，包含：主机、完整路径/账号、落地时间、用途、建议清理方式。
+- 只读探测、扫描、验证请求不写 [投放]；没有真实落地就不要写。
+- 清理 Agent 只会依据 [投放] 事实工作；漏写会导致痕迹无法回收。`

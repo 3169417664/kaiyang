@@ -1,26 +1,24 @@
 <div align="center">
 
-<img src="screenshots/pojun-logo.png" width="96" alt="Pojun"/>
+<img src="web/public/brand/kaiyang-mark.svg" width="96" alt="KAIYANG"/>
 
-# 破军 Pojun
+# 开阳 KAIYANG
 
-**AI 自主渗透测试平台 · 从一句话目标到可交付漏洞报告**
+**MULTI-STAR OPS · AI 自主渗透测试平台**
 
-> 破军，北斗第七星，主杀伐、主变局。<br/>
-> 找到防线的破口，并把破口证明给你看。
+> 开阳，北斗第六星，多星合而为一。<br/>
+> 三个二开分支合体：Pojun 的执行力、artex-ld 的可控编排、AntiFox 的交付能力。
 
-[![Release](https://img.shields.io/github/v/release/chu0119/Pojun?label=%E7%89%88%E6%9C%AC&color=red)](https://github.com/chu0119/Pojun/releases)
-[![CI](https://github.com/chu0119/Pojun/actions/workflows/ci.yml/badge.svg)](https://github.com/chu0119/Pojun/actions/workflows/ci.yml)
+[![CI](https://github.com/3169417664/kaiyang/actions/workflows/ci.yml/badge.svg)](https://github.com/3169417664/kaiyang/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue)](LICENSE)
-![Go](https://img.shields.io/badge/Go-1.24+-00ADD8?logo=go&logoColor=white)
+![Go](https://img.shields.io/badge/Go-1.26+-00ADD8?logo=go&logoColor=white)
 ![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Docker-lightgrey)
-![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?logo=docker&logoColor=white)
 
 **Go 单体后端** · **Next.js 内嵌前端** · **PostgreSQL** · **多 Agent 自主推进** · **全程证据留痕**
 
-📦 [一条命令安装](#快速开始) · 🧠 [单技能版 pojun-skill](https://github.com/chu0119/pojun-skill) —— 本平台方法论的单 skill 版，任意 AI Agent 即装即用
-
 </div>
+
+> 来源与许可：本项目基于 Pojun 0.4.82（ARTEX 0.3.15 血脉）缝合 artex-ld 与 AntiFox 的增强能力。完整归属见 [NOTICE](NOTICE)，许可证为 AGPL-3.0。
 
 ---
 

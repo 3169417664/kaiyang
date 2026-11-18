@@ -43,6 +43,21 @@ const (
 // 只拦删除，不禁读写——agent 仍要能往这些目录里写东西。
 var workspaceProtectedDirs = []string{"traffic", "evidence", "nuclei-templates"}
 
+// wsSensitive 拒绝通过文件管理器读取密钥/配置文件：工作区根是 data 目录，
+// 历史部署或 agent 误写可能把 jwt.key / .env / config.json 之类落进来。
+func wsSensitive(abs string) bool {
+	name := strings.ToLower(filepath.Base(abs))
+	switch name {
+	case "jwt.key", ".env", "config.json", "id_rsa", "id_ed25519", "authorized_keys":
+		return true
+	}
+	switch strings.ToLower(filepath.Ext(name)) {
+	case ".pem", ".key", ".p12", ".pfx":
+		return true
+	}
+	return false
+}
+
 // wsProtected reports whether an absolute path is one of the protected system
 // directories (the directory itself, or anything under it).
 //
@@ -217,6 +232,10 @@ func (s *Server) wsRead(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "非法路径")
 		return
 	}
+	if wsSensitive(abs) {
+		writeErr(w, 403, "该文件为敏感配置，禁止通过工作区读取")
+		return
+	}
 	fi, err := os.Stat(abs)
 	if err != nil {
 		writeErr(w, 404, "文件不存在")
@@ -334,6 +353,10 @@ func (s *Server) wsDownload(w http.ResponseWriter, r *http.Request) {
 	abs, ok := s.wsResolve(r.URL.Query().Get("path"))
 	if !ok {
 		writeErr(w, 400, "非法路径")
+		return
+	}
+	if wsSensitive(abs) {
+		writeErr(w, 403, "该文件为敏感配置，禁止通过工作区下载")
 		return
 	}
 	fi, err := os.Stat(abs)

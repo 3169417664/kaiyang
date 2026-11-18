@@ -52,6 +52,9 @@ type Server struct {
 	dataDir  string       // browsable workspace root
 	jwtKey   atomic.Value // HS256 signing key ([]byte); replaceable to revoke sessions
 
+	// loginLimiter 是 IP + 账号双维度登录失败限流器（进程内，单实例）。
+	loginLimiter *loginLimiter
+
 	// 文档预览（v0.4.21）：Office/PDF 取样转图片，单 worker 串行（LibreOffice
 	// 的 UserInstallation 不能并发），queue 只放 artifact id。
 	previewOnce sync.Once
@@ -165,13 +168,21 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 	if err != nil {
 		log.Fatalf("[auth] JWT key: %v", err)
 	}
-	s := &Server{m: m, engine: NewEngine(m), ctx: ctx, skillDir: skillDir, keyDir: keyDir, dataDir: dataDir, chatBusy: map[string]bool{},
+	s := &Server{m: m, engine: NewEngine(m), ctx: ctx, skillDir: skillDir, keyDir: keyDir, dataDir: dataDir, loginLimiter: newLoginLimiter(), chatBusy: map[string]bool{},
 		chatCancel: map[string]context.CancelCauseFunc{}, triggerQ: map[string][]triggeredRun{},
 		triggerActive: map[string]int{}, triggerCfg: map[string]triggerBehavior{},
 		profChatAgents: map[int64]*agent.ChatAgent{},
 		provByProfile:  map[int64]*provEntry{}, llmHealth: newLLMHealthRegistry(m.pg),
 		taskAgents: map[string]*taskAgentBundle{}, archiveWake: make(chan struct{}, 1)}
 	s.jwtKey.Store(key)
+	s.engine.SetCustomExecutor(s.runCustomExecutor)
+	s.bootstrapRBAC()
+	s.seedFusion()
+	// 模板库默认正文作为提示词四级链的第③级（任务快照 > 全局覆盖 > 模板默认 > 内置）。
+	if m.pg != nil {
+		agent.PlannerTemplateDefault = func() string { return m.pg.DefaultPromptTemplateBody("planner") }
+		agent.WorkerTemplateDefault = func() string { return m.pg.DefaultPromptTemplateBody("worker") }
+	}
 	s.listeners = listener.NewManager()
 	agent.SetListenerManager(s.listeners)
 	agent.SetConnectBackResolver(func(port int) agent.ConnectBack {
@@ -250,12 +261,14 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		wireTools(m.pg, domainReg) // 内置工具表：按 agent 过滤 + 覆盖描述/schema + 注入默认值
 		seedPrompts(m.pg)          // 内置 agent 默认提示词正文播种进 agent_prompts(仅空时)
 		s.seedOrchestrationTools() // P2 跨任务编排工具 seed 进 tools 表(可按 agent 绑定)
+		s.seedFusionAgents()       // 预置 trace_cleaner / vuln_dispatcher（工具已 seed）
 		if err := s.seedFindingRetester(); err != nil {
 			log.Printf("[retester] seed: %v", err)
 		}
 		go s.evidenceStore().RunGC(s.ctx)
 		go s.recoverPendingPreviews()     // 文档预览：恢复上次未完成的队列（v0.4.23）
 		go s.recoverEmptyFindingReports() // 空报告巡检：重启/崩溃后补写被中断的报告（v0.4.63）
+		go s.findingInvocationRetryLoop() // Finding 派发补发（每 10 分钟）
 		s.seedPythonInterpreter()         // 自定义脚本工具:开机检测 python 解释器入库(仅空时)
 		go newScheduler(s).Run(s.ctx)     // P3 触发器调度(定时/finding/目标事件),仅自定义 agent
 		// 漏洞 IM 推送投递引擎。与 Scheduler 并列但独立：推送的实时性要求(3s)
@@ -708,6 +721,16 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/auth/login", s.authLogin)
 	mux.HandleFunc("POST /api/auth/change-password", s.authChangePassword)
 
+	// RBAC / 审计
+	mux.HandleFunc("GET /api/rbac/me", s.rbacMe)
+	mux.HandleFunc("GET /api/rbac/metadata", s.rbacMetadata)
+	mux.HandleFunc("GET /api/rbac/users", s.rbacListUsers)
+	mux.HandleFunc("POST /api/rbac/users", s.rbacCreateUser)
+	mux.HandleFunc("PUT /api/rbac/users/{id}", s.rbacUpdateUser)
+	mux.HandleFunc("DELETE /api/rbac/users/{id}", s.rbacDeleteUser)
+	mux.HandleFunc("GET /api/rbac/roles", s.rbacListRoles)
+	mux.HandleFunc("GET /api/audit/logs", s.auditLogs)
+
 	mux.HandleFunc("GET /api/health", s.health)
 	mux.HandleFunc("GET /api/stats", s.stats)
 	mux.HandleFunc("GET /api/logs", s.getLogs)
@@ -728,11 +751,26 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PATCH /api/task-categories/{id}", s.pgRenameTaskCategory)
 	mux.HandleFunc("DELETE /api/task-categories/{id}", s.pgDeleteTaskCategory)
 	mux.HandleFunc("POST /api/tasks/category/batch", s.updateTasksCategoryBatch)
+	mux.HandleFunc("GET /api/planner-templates", s.listPromptTemplates("planner"))
+	mux.HandleFunc("POST /api/planner-templates", s.createPromptTemplate("planner"))
+	mux.HandleFunc("PUT /api/planner-templates/{id}", s.updatePromptTemplate("planner"))
+	mux.HandleFunc("DELETE /api/planner-templates/{id}", s.deletePromptTemplate("planner"))
+	mux.HandleFunc("POST /api/planner-templates/{id}/default", s.setDefaultPromptTemplate("planner"))
+	mux.HandleFunc("GET /api/worker-templates", s.listPromptTemplates("worker"))
+	mux.HandleFunc("POST /api/worker-templates", s.createPromptTemplate("worker"))
+	mux.HandleFunc("PUT /api/worker-templates/{id}", s.updatePromptTemplate("worker"))
+	mux.HandleFunc("DELETE /api/worker-templates/{id}", s.deletePromptTemplate("worker"))
+	mux.HandleFunc("POST /api/worker-templates/{id}/default", s.setDefaultPromptTemplate("worker"))
+
 	mux.HandleFunc("GET /api/task-templates", s.pgListTaskTemplates)
 	mux.HandleFunc("POST /api/task-templates", s.pgCreateTaskTemplate)
 	mux.HandleFunc("PATCH /api/task-templates/{id}", s.pgUpdateTaskTemplate)
 	mux.HandleFunc("DELETE /api/task-templates/{id}", s.pgDeleteTaskTemplate)
 	mux.HandleFunc("GET /api/tasks/{id}", s.getTask)
+	mux.HandleFunc("PUT /api/tasks/{id}/review/config", s.reviewConfig)
+	mux.HandleFunc("GET /api/tasks/{id}/review/proposed", s.reviewListProposed)
+	mux.HandleFunc("POST /api/tasks/{id}/review/{intentID}/approve", s.reviewApprove)
+	mux.HandleFunc("POST /api/tasks/{id}/review/{intentID}/reject", s.reviewReject)
 	mux.HandleFunc("PATCH /api/tasks/{id}", s.updateTaskMetadata)
 	mux.HandleFunc("PATCH /api/tasks/{id}/category", s.updateTaskCategory)
 	// 任务级资产拦截/允许规则
@@ -1026,7 +1064,7 @@ func (s *Server) Handler() http.Handler {
 	// /api/* goes through CORS + JWT; everything else is served by the embedded
 	// frontend (public — auth is enforced client-side and on the API). With the
 	// no-embed build the webui handler just 404s (run `next dev` separately).
-	api := securityHeaders(s.requireAuth(mux))
+	api := accessLog(securityHeaders(s.requireAuth(mux)))
 	root := http.NewServeMux()
 	root.Handle("/api/", api)
 	root.Handle("/", s.webuiHandler())
@@ -1617,6 +1655,17 @@ type createTaskReq struct {
 	// AuthConfig 任务级目标登录凭据（v0.4.8）：worker 先登录再测；创建后可用
 	// POST /api/tasks/{id}/auth-check 做一次登录自检。密码/TOTP 只进 DB。
 	AuthConfig *db.TaskAuthConfig `json:"auth_config,omitempty"`
+
+	// KAIYANG 审核 / 场景模板
+	ReviewEnabled     *bool  `json:"review_enabled,omitempty"`
+	ReviewAuto        *bool  `json:"review_auto,omitempty"`
+	WorkerCount       int    `json:"worker_count,omitempty"`
+	AssetMode         string `json:"asset_mode,omitempty"`
+	PreAgent          string `json:"pre_agent,omitempty"`
+	PlannerTemplateID *int64 `json:"planner_template_id,omitempty"`
+	WorkerTemplateID  *int64 `json:"worker_template_id,omitempty"`
+	PlannerPrompt     string `json:"planner_prompt,omitempty"`
+	WorkerPrompt      string `json:"worker_prompt,omitempty"`
 }
 
 func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
@@ -1674,6 +1723,56 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	reviewEnabled := false
+	if req.ReviewEnabled != nil {
+		reviewEnabled = *req.ReviewEnabled
+	}
+	reviewAuto := false
+	if req.ReviewAuto != nil {
+		reviewAuto = *req.ReviewAuto
+	}
+	// 分类即场景预设：未显式传审核/模板时，按分类默认值带出。
+	var categoryPreset *db.TaskCategoryPreset
+	if req.CategoryID != nil {
+		categoryPreset, _ = s.m.pg.GetTaskCategoryPreset(*req.CategoryID)
+	}
+	if req.ReviewEnabled == nil && categoryPreset != nil {
+		reviewEnabled = categoryPreset.ReviewEnabled
+	}
+	if req.PlannerTemplateID == nil && categoryPreset != nil && categoryPreset.PlannerTemplateID > 0 {
+		id := categoryPreset.PlannerTemplateID
+		req.PlannerTemplateID = &id
+	}
+	if req.WorkerTemplateID == nil && categoryPreset != nil && categoryPreset.WorkerTemplateID > 0 {
+		id := categoryPreset.WorkerTemplateID
+		req.WorkerTemplateID = &id
+	}
+	if strings.TrimSpace(req.AssetMode) == "" && categoryPreset != nil && categoryPreset.AssetMode != "" {
+		req.AssetMode = categoryPreset.AssetMode
+	}
+	plannerPrompt := strings.TrimSpace(req.PlannerPrompt)
+	if plannerPrompt == "" && req.PlannerTemplateID != nil && *req.PlannerTemplateID > 0 {
+		if tpl, e := s.m.pg.GetPromptTemplate("planner", *req.PlannerTemplateID); e == nil {
+			plannerPrompt = tpl.Body
+		}
+	}
+	workerPrompt := strings.TrimSpace(req.WorkerPrompt)
+	if workerPrompt == "" && req.WorkerTemplateID != nil && *req.WorkerTemplateID > 0 {
+		if tpl, e := s.m.pg.GetPromptTemplate("worker", *req.WorkerTemplateID); e == nil {
+			workerPrompt = tpl.Body
+		}
+	}
+	workerCount := req.WorkerCount
+	if workerCount < 0 {
+		workerCount = 0
+	}
+	if workerCount > 16 {
+		workerCount = 16
+	}
+	assetMode := strings.TrimSpace(req.AssetMode)
+	if assetMode == "" {
+		assetMode = "pentest"
+	}
 	t, err := s.m.CreateTaskWithOptions(req.Description, req.Goal, db.TaskCreateOptions{
 		Name: strings.TrimSpace(req.Name), CategoryID: req.CategoryID,
 		SourceTaskIDs: sourceIDs, CompanyIDs: req.CompanyIDs, LLMProfileIDs: req.LLMProfileIDs,
@@ -1681,6 +1780,10 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 		CoverageEnabled: req.CoverageEnabled,
 		InterceptRules:  interceptRules,
 		AuthConfig:      req.AuthConfig,
+		ReviewEnabled:   reviewEnabled, ReviewAuto: reviewAuto,
+		PlannerPromptOverride: plannerPrompt, WorkerPromptOverride: workerPrompt,
+		WorkerCount: workerCount, AssetMode: assetMode, PreAgent: strings.TrimSpace(req.PreAgent),
+		CreatedBy: auditActor(r),
 	})
 	if err != nil {
 		if errors.Is(err, db.ErrTaskCategoryInvalid) || errors.Is(err, db.ErrTaskCategoryNotFound) {
@@ -1880,6 +1983,23 @@ func (s *Server) seed(t *Task, text string) {
 // origin fact (RelDerivedFrom) so it still traces back to a fact node. Best-effort —
 // a failure just falls back to the normal planner-driven flow.
 func (s *Server) seedFirstIntent(t *Task) {
+	// pre_agent：种子意图不直接投给 worker，而是以 proposed + executor=<key> 落库，
+	// 由自定义执行器阶段领取；默认 worker 的 Frontier 会跳过它。
+	if key := strings.TrimSpace(t.PreAgent); key != "" {
+		id, err := t.Store.AddNode("intent", map[string]any{
+			"summary":  fmt.Sprintf("完成任务目标：%s", t.Goal),
+			"executor": key,
+		}, 8, "proposed", "seed", nil)
+		if err != nil {
+			log.Printf("[seed] task %s: 下发 pre_agent 种子失败: %v", t.ID, err)
+			return
+		}
+		if origin, _ := t.Store.OriginFactID(); origin > 0 {
+			_ = t.Store.Link(origin, db.RelDerivedFrom, id)
+		}
+		log.Printf("[seed] task %s: 已下发 pre_agent 种子意图 #%d（执行器 %s）", t.ID, id, key)
+		return
+	}
 	// v0.4.46：种子意图只适用于简单任务——描述+目标合计 ≤200 字符时才下发。
 	// 复杂任务（如渗透测试全流程描述动辄上千字）让 planner 拆解成 3-5 条具体
 	// 意图，不生成「做整个任务」的种子——否则 worker 收到等于收到整个任务。
@@ -2949,6 +3069,9 @@ func (s *Server) activity(w http.ResponseWriter, r *http.Request) {
 // single Plan session); a Worker session is one intent, keyed by its node id.
 func parseActivitySession(sess string) (db.ActivitySessionFilter, bool) {
 	switch {
+	case sess == "all":
+		// 零值过滤 = 整个任务全部 lane（主/规划/各 worker），供轨迹合并视图使用。
+		return db.ActivitySessionFilter{}, true
 	case sess == "" || sess == "main":
 		// bare "main" = the current segment; caller resolves MainSeg via the store.
 		return db.ActivitySessionFilter{Main: true}, true

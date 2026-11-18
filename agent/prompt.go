@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bytes"
+	"strings"
 	"text/template"
 	"time"
 )
@@ -41,6 +42,30 @@ func nowStr() string { return time.Now().Format("2006-01-02 15:04:05 MST") }
 // ——与当年宿主工具"装了没用起来"同一病根，解法也同款：清单进 system prompt）。
 // 返回空串 = 该 agent 没绑技能，不加块。
 var SkillIndexBlock func(agentKey string) string
+
+// PlannerTemplateDefault / WorkerTemplateDefault 由 host 注入：模板库中
+// is_default 的正文。任务级 override 为空时，它作为第四级回退的“模板默认”。
+var (
+	PlannerTemplateDefault func() string
+	WorkerTemplateDefault  func() string
+)
+
+// renderSystemWithOverride 在 renderSystem 之外增加最高优先级的任务级快照：
+// 任务快照 > 全局 Agent 提示词覆盖 > 模板库默认 > 内置默认。
+func renderSystemWithOverride(agentKey, def string, vars any, taskOverride string) string {
+	if strings.TrimSpace(taskOverride) != "" {
+		if out, err := renderTmpl(taskOverride, vars); err == nil {
+			body := out
+			if SkillIndexBlock != nil {
+				if blk := SkillIndexBlock(agentKey); blk != "" {
+					body += "\n\n" + blk
+				}
+			}
+			return body
+		}
+	}
+	return renderSystem(agentKey, def, vars)
+}
 
 func renderSystem(agentKey, def string, vars any) string {
 	tmpl := def
