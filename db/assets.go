@@ -799,6 +799,9 @@ RETURNING id`,
 			TaskID:       req.TaskID,
 		})
 	}
+	if len(req.Auth) > 0 {
+		_ = s.recordDiscoveredAuth(id, "http", req.Auth)
+	}
 	return id, nil
 }
 
@@ -930,6 +933,9 @@ RETURNING id`,
 		})
 	}
 	s.linkHostAssets(domain, rootDomain, req.TaskID)
+	if len(req.Auth) > 0 {
+		_ = s.recordDiscoveredAuth(id, serviceName, req.Auth)
+	}
 	return id, nil
 }
 
@@ -1090,7 +1096,7 @@ LIMIT $2 OFFSET $3`, typ, limit, offset)
 		return nil, err
 	}
 	defer rows.Close()
-	return scanAssets(rows)
+	return s.scanAssetsWithAuth(rows)
 }
 
 // CountByType returns the total number of assets of a type (for server-side pagination).
@@ -1125,7 +1131,7 @@ FROM assets WHERE company_id = $1`
 		return nil, err
 	}
 	defer rows.Close()
-	return scanAssets(rows)
+	return s.scanAssetsWithAuth(rows)
 }
 
 func (s *AssetStore) CountByCompany(companyID int64, typ string) (int, error) {
@@ -1432,7 +1438,7 @@ func (s *AssetStore) GetByIDs(ids []int64) ([]*Asset, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	return scanAssets(rows)
+	return s.scanAssetsWithAuth(rows)
 }
 
 // DeleteByCompanyID hard-deletes all assets belonging to a company. Returns rows deleted.
@@ -1583,4 +1589,15 @@ func scanAssets(rows *sql.Rows) ([]*Asset, error) {
 		out = append(out, a)
 	}
 	return out, rows.Err()
+}
+
+// scanAssetsWithAuth 在普通资产扫描后，把 asset_credentials 的脱敏投影回填到
+// Asset.Auth，保证 auth_request/session_login 等旧工具能看到新凭据模型。
+func (s *AssetStore) scanAssetsWithAuth(rows *sql.Rows) ([]*Asset, error) {
+	out, err := scanAssets(rows)
+	if err != nil || len(out) == 0 {
+		return out, err
+	}
+	_ = s.Credentials().PopulateAuth(out)
+	return out, nil
 }
