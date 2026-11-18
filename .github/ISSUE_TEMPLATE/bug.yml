@@ -1,0 +1,40 @@
+name: Bug Report
+description: 报告一个可复现的缺陷
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        请勿在 issue 中粘贴真实客户数据、API key、密码或未修复的 0day 细节。
+  - type: input
+    id: version
+    attributes:
+      label: 版本 / commit
+      placeholder: "v0.1.0 / 992ac6a"
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      placeholder: "1. ...\n2. ...\n3. ..."
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期结果
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际结果
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志 / 截图
+      render: shell

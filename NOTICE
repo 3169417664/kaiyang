@@ -1,0 +1,35 @@
+KAIYANG (开阳)
+Copyright (C) 2026 KAIYANG contributors
+
+This product is a derivative work that stitches together ideas and code from
+the following upstream projects. Their copyright notices and AGPL-3.0
+obligations remain in force.
+
+1. ARTEX
+   Author: Autumn-27
+   https://github.com/Autumn-27/ARTEX
+   Baseline: v0.3.15 (AGPL-3.0)
+
+2. Pojun (破军)
+   Author: chu0119
+   https://github.com/chu0119/Pojun
+   Baseline: v0.4.82 (AGPL-3.0)
+   KAIYANG uses Pojun as its main code base.
+
+3. artex-ld
+   Author: IcebergN2026
+   https://github.com/IcebergN2026/artex-ld
+   Referenced for: intent review, planner/worker templates, custom executor,
+   finding orchestration, asset credentials, intranet topology, trajectory.
+   (AGPL-3.0)
+
+4. AntiFox
+   Author: AntiFox-AI
+   https://github.com/AntiFox-AI/antifox
+   Referenced for: report delivery, finding enrichment, RBAC, knowledge base.
+   (AGPL-3.0)
+
+License: AGPL-3.0. See LICENSE.
+
+The upstream projects' own disclaimers apply: use KAIYANG only against systems
+you own, control, or are explicitly authorized in writing to test.
