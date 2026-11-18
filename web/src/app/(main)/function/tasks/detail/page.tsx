@@ -51,11 +51,13 @@ import { RetestsTab } from "./_tabs/retests-tab";
 import { ReviewPanel } from "./_tabs/review-panel";
 import { SessionsTab } from "./_tabs/sessions-tab";
 import { TrajectoryTab } from "./_tabs/trajectory-tab";
+import { TopologyTab } from "./_tabs/topology-tab";
 
 const TABS = [
   { value: "sessions", label: "会话" },
   { value: "trajectory", label: "轨迹" },
   { value: "review", label: "审核" },
+  { value: "topology", label: "拓扑" },
   { value: "overview", label: "总览" },
   { value: "graph", label: "探索链路" },
   { value: "broadcast", label: "播报板" },
@@ -498,6 +500,9 @@ function TaskDetailInner() {
         </TabsContent>
         <TabsContent value="review" className="mt-0">
           {task && <ReviewPanel task={task} onTaskChange={setTask} />}
+        </TabsContent>
+        <TabsContent value="topology" className="mt-0">
+          <TopologyTab taskId={id} categoryName={task?.category_name} />
         </TabsContent>
         <TabsContent value="overview" className="mt-0">
           <OverviewTab taskId={id} />
