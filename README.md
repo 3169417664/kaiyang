@@ -112,7 +112,21 @@ skills/             内置技能库
 ## 快速开始
 
 > 依赖 **PostgreSQL 16+**；探索需配置 LLM（Anthropic / OpenAI / 兼容网关）。
-> 目前尚未发布正式 Release，`install.sh` 的一键下载暂不可用；请使用源码构建。
+> 已发布 **v0.1.0**（Linux / macOS，含 `install.sh` 与 SHA256SUMS）。
+
+### 一键安装（Linux）
+
+```bash
+curl -fsSL https://github.com/3169417664/kaiyang/releases/latest/download/install.sh | sudo bash
+```
+
+macOS 使用同一脚本（不需要 sudo）：
+
+```bash
+curl -fsSL https://github.com/3169417664/kaiyang/releases/latest/download/install.sh | bash
+```
+
+### 源码构建
 
 ### 1. 构建前端
 
