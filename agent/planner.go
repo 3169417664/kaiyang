@@ -7,13 +7,13 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/3169417664/kaiyang/db"
+	"github.com/3169417664/kaiyang/intercept"
 	"github.com/Autumn-27/norma/agentcore"
 	"github.com/Autumn-27/norma/llm"
 	"github.com/Autumn-27/norma/permission"
 	actool "github.com/Autumn-27/norma/tool"
 	"github.com/Autumn-27/norma/transcript"
-	"github.com/3169417664/kaiyang/db"
-	"github.com/3169417664/kaiyang/intercept"
 )
 
 // Planner is the event-driven LLM planner (docs §4.3): each time the asset or
@@ -22,7 +22,7 @@ import (
 // into the frontier. It is the sole intent generator.
 type Planner struct {
 	// intentQueue 返回 (派发阈值, worker 数)；nil = 不限制。
-	intentQueue func() (int, int)
+	intentQueue     func() (int, int)
 	findingRecorder FindingRecorder
 	// 授权边界守卫开关（v0.4.63）：装配时从设置读取，传到 ToolSet。
 	scopeGuard           bool
@@ -438,7 +438,7 @@ func plannerSystem(goal, dataDir, workDir, taskOverride string) string {
 	}
 	body := renderSystemWithOverride("planner", def, PlannerVars{Goal: goal, DataDir: dataDir, Now: nowStr()}, taskOverride)
 	// 作业硬尾巴（v0.4.63）：漏洞覆盖矩阵/纵深优先 + 授权边界复核。
-	return body + artifactSpec(workDir) + coverageMatrixPlannerGuidance + scopeVerifyPlannerGuidance + execFacePlannerGuidance +
+	return body + plannerExecutionModeSpec(goal) + artifactSpec(workDir) + coverageMatrixPlannerGuidance + scopeVerifyPlannerGuidance + execFacePlannerGuidance +
 		engagementFraming + impactOrchestrationGuidance
 }
 

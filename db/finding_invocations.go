@@ -3,6 +3,8 @@ package db
 import (
 	"database/sql"
 	"errors"
+	"fmt"
+	"strings"
 	"time"
 )
 
@@ -98,4 +100,34 @@ func (d *DB) RecordTaskDispatchTarget(assetKey string, taskID, findingID int64) 
 	_, err := d.Exec(`INSERT INTO task_dispatch_targets(asset_key,task_id,finding_id)
 		VALUES ($1,$2,$3) ON CONFLICT (asset_key) DO NOTHING`, assetKey, taskID, findingID)
 	return err
+}
+
+// ErrTaskDispatchTargetExists 表示资产键已被其他任务登记（跨父任务/并发派发）。
+var ErrTaskDispatchTargetExists = errors.New("dispatch asset key already registered")
+
+// insertTaskDispatchTargets 在创建任务的同一事务里登记内网派发资产键。
+// 唯一键是 asset_key：同一个 IP/根域/域/URL host 无论被多少父任务看到，都只允许
+// 一个内网子任务。任一键冲突 → 整个创建回滚并返回 ErrTaskDispatchTargetExists，
+// 由调用方返回已有任务 id（先查）或冲突错误（并发）。
+func insertTaskDispatchTargets(tx *sql.Tx, taskID, findingID int64, assetKeys []string) error {
+	seen := map[string]struct{}{}
+	for _, key := range assetKeys {
+		key = strings.ToLower(strings.TrimSpace(key))
+		if key == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		res, err := tx.Exec(`INSERT INTO task_dispatch_targets(asset_key,task_id,finding_id)
+			VALUES ($1,$2,$3) ON CONFLICT (asset_key) DO NOTHING`, key, taskID, findingID)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return fmt.Errorf("%w: %s", ErrTaskDispatchTargetExists, key)
+		}
+	}
+	return nil
 }

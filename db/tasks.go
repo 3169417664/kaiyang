@@ -60,14 +60,43 @@ type Task struct {
 	AutopilotExtensions int  `json:"autopilot_extensions,omitempty"`
 
 	// KAIYANG 审核 / 场景模板（§FUSION-B）
-	ReviewEnabled        bool   `json:"review_enabled"`
-	ReviewAuto           bool   `json:"review_auto"`
+	ReviewEnabled         bool   `json:"review_enabled"`
+	ReviewAuto            bool   `json:"review_auto"`
 	PlannerPromptOverride string `json:"planner_prompt_override,omitempty"`
 	WorkerPromptOverride  string `json:"worker_prompt_override,omitempty"`
-	WorkerCount          int    `json:"worker_count"`
-	AssetMode            string `json:"asset_mode"`
-	PreAgent             string `json:"pre_agent,omitempty"`
-	CreatedBy            string `json:"created_by,omitempty"`
+	WorkerCount           int    `json:"worker_count"`
+	AssetMode             string `json:"asset_mode"`
+	PreAgent              string `json:"pre_agent,omitempty"`
+	CreatedBy             string `json:"created_by,omitempty"`
+}
+
+// ChildTaskInfo 是 spawn_task 派生关系的轻量视图（供 get_task_graph 去重）。
+type ChildTaskInfo struct {
+	ID     int64  `json:"id"`
+	Name   string `json:"name"`
+	Status string `json:"status"`
+	Goal   string `json:"goal"`
+}
+
+// ChildTasksByParentRef 列出由同一父任务派生的子任务。
+// spawn_task 把 parent_ref 记为父任务 id 字符串；get_task_graph 附带这个列表，
+// 让 vuln_dispatcher 的同资产去重有数据可查（探索图本身不含任务派生关系）。
+func (d *DB) ChildTasksByParentRef(parentID int64) ([]ChildTaskInfo, error) {
+	rows, err := d.Query(`SELECT id, COALESCE(name,''), status, goal FROM tasks
+		WHERE parent_ref=$1 ORDER BY id`, strconv.FormatInt(parentID, 10))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []ChildTaskInfo{}
+	for rows.Next() {
+		var c ChildTaskInfo
+		if err := rows.Scan(&c.ID, &c.Name, &c.Status, &c.Goal); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
 }
 
 // TaskDeleteResult reports optional related-data cleanup performed in the same
@@ -185,6 +214,15 @@ type TaskCreateOptions struct {
 	AssetMode             string
 	PreAgent              string
 	CreatedBy             string
+	// PlannerTemplateID / PlannerTemplateNKey 只用于建任务时从模板库取正文，
+	// 解析后快照进 PlannerPromptOverride（与 planner_prompt 同传时后者优先）。
+	// 二者互斥；nkey 面向稳定引用，id 兼容旧调用。
+	PlannerTemplateID   int64
+	PlannerTemplateNKey string
+	// DispatchAssetKeys 是内网子任务实际目标的规范化资产键（IP > 根域 > 域 > URL host）。
+	// 与任务创建同一事务写入 task_dispatch_targets；唯一键阻止跨父任务/并发的同资产重复派发。
+	DispatchAssetKeys []string
+	DispatchFindingID int64
 }
 
 // CreateTaskWithOptions creates an exploration, task, direct source relations,
@@ -198,6 +236,28 @@ func (d *DB) CreateTaskWithOptions(description, goal string, opts TaskCreateOpti
 		return nil, err
 	}
 	opts.CompanyIDs = companyIDs
+	// planner 模板 → 正文快照。显式 PlannerPromptOverride 优先；id/nkey 互斥，
+	// 找不到模板直接失败，避免静默退回默认提示词。
+	if strings.TrimSpace(opts.PlannerPromptOverride) == "" &&
+		(opts.PlannerTemplateID > 0 || strings.TrimSpace(opts.PlannerTemplateNKey) != "") {
+		if opts.PlannerTemplateID > 0 && strings.TrimSpace(opts.PlannerTemplateNKey) != "" {
+			return nil, fmt.Errorf("planner_template_id 与 planner_template_nkey 互斥")
+		}
+		var tpl *PromptTemplate
+		var terr error
+		if opts.PlannerTemplateID > 0 {
+			tpl, terr = d.GetPromptTemplate("planner", opts.PlannerTemplateID)
+		} else {
+			tpl, terr = d.GetPromptTemplateByNKey("planner", opts.PlannerTemplateNKey)
+		}
+		if terr != nil {
+			return nil, fmt.Errorf("planner 模板不存在: %w", terr)
+		}
+		if tpl == nil {
+			return nil, fmt.Errorf("planner 模板不存在")
+		}
+		opts.PlannerPromptOverride = tpl.Body
+	}
 	tx, err := d.Begin()
 	if err != nil {
 		return nil, err
@@ -273,6 +333,9 @@ INSERT INTO tasks(name, category_id, description, goal, exploration_id, llm_prof
 VALUES ($1,$2,$3,$4,$5,$6,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
 RETURNING id, status, paused, created_at`, opts.Name, opts.CategoryID, description, goal, expID, active, opts.TimeoutSeconds, opts.PlanHeartbeatSeconds, coverageEnabled, authJSON,
 		opts.ReviewEnabled, opts.ReviewAuto, opts.PlannerPromptOverride, opts.WorkerPromptOverride, opts.WorkerCount, assetMode, opts.PreAgent, opts.CreatedBy).Scan(&t.ID, &t.Status, &t.Paused, &t.CreatedAt); err != nil {
+		return nil, err
+	}
+	if err := insertTaskDispatchTargets(tx, t.ID, opts.DispatchFindingID, opts.DispatchAssetKeys); err != nil {
 		return nil, err
 	}
 	if err := insertTaskRelations(tx, t.ID, opts.SourceTaskIDs); err != nil {

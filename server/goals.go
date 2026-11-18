@@ -32,7 +32,9 @@ func (s *Server) launchTask(t *Task, seedText string, seedFirstIntent bool) {
 		return
 	}
 	s.seed(t, seedText)
-	if seedFirstIntent {
+	// pre_agent 任务必须有一条 executor 种子意图，否则自定义执行器阶段无单可领；
+	// 此时不受「简单任务才发种子」开关限制。
+	if seedFirstIntent || strings.TrimSpace(t.PreAgent) != "" {
 		s.seedFirstIntent(t)
 	}
 	s.engine.decInflight(t.ID)

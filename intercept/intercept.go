@@ -165,6 +165,7 @@ var defaultEnabledTools = []string{
 	"listener_start", "listener_stop",
 	"goal_met",
 	"Write", "Edit", "MultiEdit",
+	"Delete", "delete_file", "file_delete", "remove_file",
 }
 
 // New creates an Interceptor backed by d. The rule cache is lazy-loaded on
@@ -414,7 +415,7 @@ const (
 	// 长命令——几百到上千字符的 shell 脚本——明显更久），而且正文为空时会
 	// 升预算重试（32768 → 65536），重试要挤在同一个超时窗口内。时间给短了
 	// 就会把「模型其实能裁决」误判成超时失败。
-	defaultJudgeTimeoutSecs = 180
+	defaultJudgeTimeoutSecs      = 180
 	defaultJudgeFailAction       = "ask"
 	defaultJudgeAskTimeoutSecs   = 180
 	defaultJudgeAskTimeoutAction = "allow"
