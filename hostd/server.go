@@ -7,6 +7,7 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -384,6 +385,7 @@ func (s *Server) runGitHub(ctx context.Context, j *Job, tool hosttools.Tool, pro
 
 	var blob []byte
 	var lastErr error
+	chosenURL := ""
 	for _, u := range urls {
 		j.append(fmt.Sprintf("[*] 下载 %s\n", u))
 
@@ -413,12 +415,16 @@ func (s *Server) runGitHub(ctx context.Context, j *Job, tool hosttools.Tool, pro
 			}
 		}
 		if len(blob) > 0 {
+			chosenURL = u
 			break // 本候选下载成功
 		}
 		// 全部重试失败 → 换下一个候选资产（未命中 404 时换 URL 也没意义，直接结束）
 	}
 	if lastErr != nil {
 		return 1, fmt.Errorf("下载失败: %w", lastErr)
+	}
+	if err := verifyGitHubDownload(ctx, client, GitHubAPITagURL(tool), chosenURL, blob); err != nil {
+		return 1, err
 	}
 	j.append(fmt.Sprintf("[*] 已下载 %.1f MB,解压…\n", float64(len(blob))/(1<<20)))
 
@@ -632,28 +638,160 @@ func latestTag(ctx context.Context, client *http.Client, apiURL string) (string,
 	return "", apiErr
 }
 
-func latestTagViaAPI(ctx context.Context, client *http.Client, apiURL string) (string, error) {
+type ghReleaseAsset struct {
+	Name               string `json:"name"`
+	Digest             string `json:"digest"`
+	BrowserDownloadURL string `json:"browser_download_url"`
+}
+
+type ghRelease struct {
+	TagName string           `json:"tag_name"`
+	Assets  []ghReleaseAsset `json:"assets"`
+}
+
+func fetchGitHubRelease(ctx context.Context, client *http.Client, apiURL string) (*ghRelease, error) {
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("User-Agent", "pojun-hostd")
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("GitHub API HTTP %d", resp.StatusCode)
+		return nil, fmt.Errorf("GitHub API HTTP %d", resp.StatusCode)
 	}
-	var payload struct {
-		TagName string `json:"tag_name"`
-	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&payload); err != nil {
-		return "", err
+	var payload ghRelease
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 2<<20)).Decode(&payload); err != nil {
+		return nil, err
 	}
 	if payload.TagName == "" {
-		return "", fmt.Errorf("响应里没有 tag_name")
+		return nil, fmt.Errorf("响应里没有 tag_name")
 	}
-	return payload.TagName, nil
+	return &payload, nil
+}
+
+// repoAndTagFromReleaseURLs 从 API URL 与资产 URL 中提取 owner/repo 与 tag。
+// 例：apiURL=https://api.github.com/repos/projectdiscovery/nuclei/releases/latest
+//
+//	assetURL=https://github.com/projectdiscovery/nuclei/releases/download/v3.1.0/nuclei_3.1.0_linux_amd64.zip
+func repoAndTagFromReleaseURLs(apiURL, assetURL string) (repo, tag string) {
+	const prefix = "https://api.github.com/repos/"
+	if strings.HasPrefix(apiURL, prefix) {
+		rest := strings.TrimSuffix(strings.TrimPrefix(apiURL, prefix), "/releases/latest")
+		if rest != "" && strings.Count(rest, "/") == 1 {
+			repo = rest
+		}
+	}
+	if i := strings.Index(assetURL, "/releases/download/"); i >= 0 {
+		rest := assetURL[i+len("/releases/download/"):]
+		if j := strings.IndexByte(rest, '/'); j > 0 {
+			tag = rest[:j]
+		}
+	}
+	return repo, tag
+}
+
+func latestTagViaAPI(ctx context.Context, client *http.Client, apiURL string) (string, error) {
+	rel, err := fetchGitHubRelease(ctx, client, apiURL)
+	if err != nil {
+		return "", err
+	}
+	return rel.TagName, nil
+}
+
+// verifyGitHubDownload 校验下载内容的 SHA256。
+//
+// 信任源优先级：
+//  1. GitHub Release API 的 asset.digest（GitHub 在服务端计算，攻击者篡改
+//     仓库 Release 资产时摘要会随之变化，至少能固定“下载到的就是发布页上的”）；
+//  2. 同 Release 的 SHA256SUMS / checksums.txt。
+//
+// 两者都没有时默认拒绝安装（KAIYANG_HOSTD_ALLOW_UNVERIFIED=1 可显式放行）。
+// 这是供应链面：root 助手把下载内容直接写到 /usr/local/bin，宁可装不上，
+// 也不能在无完整性依据时以 root 落盘。
+func verifyGitHubDownload(ctx context.Context, client *http.Client, apiURL, assetURL string, blob []byte) error {
+	name := path.Base(strings.SplitN(assetURL, "?", 2)[0])
+	sum := sha256.Sum256(blob)
+	got := hex.EncodeToString(sum[:])
+
+	rel, err := fetchGitHubRelease(ctx, client, apiURL)
+	if err == nil {
+		for _, a := range rel.Assets {
+			if a.Name != name {
+				continue
+			}
+			if d := strings.TrimSpace(a.Digest); strings.HasPrefix(strings.ToLower(d), "sha256:") {
+				want := strings.ToLower(strings.TrimSpace(d[len("sha256:"):]))
+				if want != got {
+					return fmt.Errorf("SHA256 校验失败：期望 %s，实际 %s（下载损坏或 Release 被篡改）", want, got)
+				}
+				return nil
+			}
+		}
+		// 回退：同 Release 的校验和清单。
+		for _, a := range rel.Assets {
+			ln := strings.ToLower(a.Name)
+			if ln != "sha256sums" && ln != "sha256sums.txt" && ln != "checksums.txt" && ln != "checksums" {
+				continue
+			}
+			req, _ := http.NewRequestWithContext(ctx, http.MethodGet, a.BrowserDownloadURL, nil)
+			req.Header.Set("User-Agent", "pojun-hostd")
+			resp, derr := client.Do(req)
+			if derr != nil {
+				continue
+			}
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+			resp.Body.Close()
+			for _, line := range strings.Split(string(body), "\n") {
+				fields := strings.Fields(strings.TrimSpace(line))
+				if len(fields) != 2 || len(fields[0]) != 64 {
+					continue
+				}
+				if strings.TrimPrefix(fields[1], "*") == name {
+					if !strings.EqualFold(fields[0], got) {
+						return fmt.Errorf("SHA256 校验失败：期望 %s，实际 %s", fields[0], got)
+					}
+					return nil
+				}
+			}
+		}
+	}
+	// GitHub API 可能被共享出口 IP 限流；仍可从 releases/download 路径直接取
+	// 校验和清单。repo/tag 均来自本次下载的已知 URL，不是用户输入。
+	if repo, tag := repoAndTagFromReleaseURLs(apiURL, assetURL); repo != "" && tag != "" {
+		for _, sumName := range []string{"SHA256SUMS", "sha256sums.txt", "checksums.txt", "checksums"} {
+			u := "https://github.com/" + repo + "/releases/download/" + tag + "/" + sumName
+			req, _ := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+			req.Header.Set("User-Agent", "pojun-hostd")
+			resp, derr := client.Do(req)
+			if derr != nil || resp.StatusCode != http.StatusOK {
+				if resp != nil {
+					resp.Body.Close()
+				}
+				continue
+			}
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+			resp.Body.Close()
+			for _, line := range strings.Split(string(body), "\n") {
+				fields := strings.Fields(strings.TrimSpace(line))
+				if len(fields) != 2 || len(fields[0]) != 64 {
+					continue
+				}
+				if strings.TrimPrefix(fields[1], "*") == name {
+					if !strings.EqualFold(fields[0], got) {
+						return fmt.Errorf("SHA256 校验失败：期望 %s，实际 %s", fields[0], got)
+					}
+					return nil
+				}
+			}
+		}
+	}
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("KAIYANG_HOSTD_ALLOW_UNVERIFIED")), "1") {
+		log.Printf("[hostd] 警告：%s 无可用校验和，已按 KAIYANG_HOSTD_ALLOW_UNVERIFIED=1 放行", name)
+		return nil
+	}
+	return fmt.Errorf("%s 没有可用的 SHA256 校验来源，拒绝安装（如确认上游可信可设置 KAIYANG_HOSTD_ALLOW_UNVERIFIED=1）", name)
 }
 
 // latestTagViaRedirect 不跟随重定向，从 Location 路径末尾取 tag。

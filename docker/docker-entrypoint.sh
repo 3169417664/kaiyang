@@ -19,12 +19,15 @@ HOSTD_SOCK="/run/kaiyang/hostd.sock"
 # 生命周期走，重建即重跑（预装本身幂等：已装好的逐项跳过，开销只有探测）。
 PREINSTALL_MARK="/app/.tools-preinstall-done"
 PREINSTALL_LOG="/app/data/tools-preinstall.log"
-mkdir -p "$(dirname "$HOSTD_SOCK")" /app/data
+mkdir -p "$(dirname "$HOSTD_SOCK")" /app/data /app/nuclei-templates
+# 持久卷通常由 root 创建；主服务以 kaiyang 用户运行，启动前把可写目录交还。
+chown -R kaiyang:kaiyang /app/data /app/nuclei-templates /app/skills 2>/dev/null || true
 
 # ── hostd：常驻 unix socket，供「宿主环境」页一键装/重装 ──
 if [ -x /app/kaiyang-hostd ]; then
   if [ ! -S "$HOSTD_SOCK" ]; then
-    /app/kaiyang-hostd -socket "$HOSTD_SOCK" >>/app/data/hostd.log 2>&1 &
+    # socket 属组交给主服务用户；主服务没有 root，但仍可通过 socket 请求受控安装。
+    /app/kaiyang-hostd -socket "$HOSTD_SOCK" -socket-group kaiyang >>/app/data/hostd.log 2>&1 &
     for _ in 1 2 3 4 5 6 7 8 9 10; do
       [ -S "$HOSTD_SOCK" ] && break
       sleep 0.3
@@ -56,5 +59,6 @@ else
   echo "[entrypoint] warn: 未找到 /app/kaiyang-hostd（页面一键安装不可用）"
 fi
 
-# exec 让 start.sh 成为 PID 1 的替代进程，docker stop 的 SIGTERM 直接到 kaiyang。
-exec /app/start.sh "$@"
+# 降权运行主服务：hostd 已完成 root 侧初始化，主进程以 kaiyang 用户执行。
+# gosu 直接 exec，不产生中间 shell，SIGTERM 可正常转发给 start.sh。
+exec gosu kaiyang /app/start.sh "$@"

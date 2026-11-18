@@ -18,14 +18,15 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/3169417664/kaiyang/llmrec"
 	"github.com/Autumn-27/norma/agentcore"
 	"github.com/Autumn-27/norma/compaction"
 	"github.com/Autumn-27/norma/llm"
 	acperm "github.com/Autumn-27/norma/permission"
 	"github.com/Autumn-27/norma/transcript"
-	"github.com/3169417664/kaiyang/llmrec"
 )
 
 // Config describes the LLM backend resolved from the environment.
@@ -162,6 +163,86 @@ func compactionConfig(windowTokens int) *compaction.Config {
 	return &compaction.Config{ContextWindow: windowTokens}
 }
 
+// 进程环境里的敏感变量快照。服务启动完成、连接池/Provier 已建立后，这些变量
+// 会从进程环境中删除：Agent 的 Bash/job/自定义脚本子进程都继承父进程环境，
+// 只要 DSN、LLM Key、云令牌还留在 environ 里，任何一条命令执行面都能直接读走。
+// 删除后仍需要读取的少量配置（LLM 兜底）从快照取值。
+var (
+	envSnapshotMu sync.RWMutex
+	envSnapshot   = map[string]string{}
+)
+
+func sensitiveEnvKey(k string) bool {
+	if k == "" {
+		return false
+	}
+	up := strings.ToUpper(k)
+	switch up {
+	case "POJUN_PG_DSN", "KAIYANG_PG_DSN", "DATABASE_URL", "PGPASSWORD",
+		"POJUN_FOFA_KEY", "KAIYANG_FOFA_KEY", "FOFA_KEY", "SHODAN_API_KEY",
+		"HTTP_PROXY_PASSWORD", "HTTPS_PROXY_PASSWORD":
+		return true
+	}
+	for _, suffix := range []string{"_API_KEY", "_TOKEN", "_SECRET", "_PASSWORD", "_PASSWD", "_CREDENTIALS"} {
+		if strings.HasSuffix(up, suffix) {
+			return true
+		}
+	}
+	// AWS_SECRET_ACCESS_KEY 这类“秘密词在中间”的命名也要覆盖。
+	for _, word := range []string{"SECRET", "PASSWORD", "CREDENTIAL"} {
+		if strings.Contains(up, word) {
+			return true
+		}
+	}
+	return false
+}
+
+// FilterSensitiveEnv 返回去掉敏感键后的环境副本，供所有子进程使用。
+func FilterSensitiveEnv(env []string) []string {
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		k, _, ok := strings.Cut(kv, "=")
+		if !ok || sensitiveEnvKey(k) {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
+}
+
+// ScrubSensitiveEnv 在服务完成初始化后调用：先快照 LLM 兜底所需的键，再从
+// 进程环境中删除全部敏感变量。调用之后启动的子进程（Bash/job/MCP/脚本）
+// 只能拿到已清洗的环境。
+func ScrubSensitiveEnv() {
+	envSnapshotMu.Lock()
+	for _, k := range []string{
+		"POJUN_LLM_PROVIDER", "POJUN_LLM_MODEL", "POJUN_LLM_BASE_URL", "POJUN_LLM_PROXY", "POJUN_LLM_STREAM",
+		"POJUN_LLM_API_KEY", "POJUN_FOFA_KEY", "KAIYANG_FOFA_KEY", "FOFA_KEY",
+		"ANTHROPIC_API_KEY", "OPENAI_API_KEY",
+	} {
+		if v := os.Getenv(k); v != "" {
+			envSnapshot[k] = v
+			_ = os.Unsetenv(k)
+		}
+	}
+	envSnapshotMu.Unlock()
+
+	for _, kv := range os.Environ() {
+		if k, _, ok := strings.Cut(kv, "="); ok && sensitiveEnvKey(k) {
+			_ = os.Unsetenv(k)
+		}
+	}
+}
+
+func envValue(k string) string {
+	if v := os.Getenv(k); v != "" {
+		return v
+	}
+	envSnapshotMu.RLock()
+	defer envSnapshotMu.RUnlock()
+	return envSnapshot[k]
+}
+
 // FromEnv resolves the LLM provider config:
 //
 //	POJUN_LLM_PROVIDER = anthropic|openai (default: inferred from keys)
@@ -170,9 +251,9 @@ func compactionConfig(windowTokens int) *compaction.Config {
 //	POJUN_LLM_PROXY    = proxy URL        (optional; http/https/socks5)
 //	ANTHROPIC_API_KEY / OPENAI_API_KEY         = credentials
 func FromEnv() (Config, bool) {
-	prov := os.Getenv("POJUN_LLM_PROVIDER")
-	anthKey := os.Getenv("ANTHROPIC_API_KEY")
-	oaiKey := os.Getenv("OPENAI_API_KEY")
+	prov := envValue("POJUN_LLM_PROVIDER")
+	anthKey := envValue("ANTHROPIC_API_KEY")
+	oaiKey := envValue("OPENAI_API_KEY")
 
 	if prov == "" {
 		switch {
@@ -186,11 +267,11 @@ func FromEnv() (Config, bool) {
 	}
 
 	c := Config{
-		BaseURL: os.Getenv("POJUN_LLM_BASE_URL"),
-		Model:   os.Getenv("POJUN_LLM_MODEL"),
-		Proxy:   strings.TrimSpace(os.Getenv("POJUN_LLM_PROXY")),
+		BaseURL: envValue("POJUN_LLM_BASE_URL"),
+		Model:   envValue("POJUN_LLM_MODEL"),
+		Proxy:   strings.TrimSpace(envValue("POJUN_LLM_PROXY")),
 		// 默认流式;POJUN_LLM_STREAM=false/0/off 显式关闭走非流式。
-		Stream: !isFalsy(os.Getenv("POJUN_LLM_STREAM")),
+		Stream: !isFalsy(envValue("POJUN_LLM_STREAM")),
 	}
 	switch prov {
 	case "openai":

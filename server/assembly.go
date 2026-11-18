@@ -12,11 +12,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Autumn-27/norma/skill"
-	actool "github.com/Autumn-27/norma/tool"
 	"github.com/3169417664/kaiyang/agent"
 	"github.com/3169417664/kaiyang/db"
 	"github.com/3169417664/kaiyang/traffic"
+	"github.com/Autumn-27/norma/skill"
+	actool "github.com/Autumn-27/norma/tool"
 )
 
 // wireAgentAugment connects the PG agent_visibility table into the agent runtime:
@@ -361,6 +361,7 @@ func wireTools(pg *db.DB, domainReg map[string]actool.CoreTool) {
 			byKey[t.Key] = t
 		}
 		runInfo := agent.RunInfoFrom(ctx)
+		runAdmin := agent.RunAdminFrom(ctx)
 		resolve := func(t actool.CoreTool, row *db.Tool) actool.CoreTool {
 			var schema map[string]any
 			if len(row.Schema) > 0 {
@@ -372,11 +373,20 @@ func wireTools(pg *db.DB, domainReg map[string]actool.CoreTool) {
 		for _, t := range tools {
 			row, known := byKey[t.Name()]
 			if !known { // MCP/skill/host tool: no row → untouched
+				// 非管理员运行不暴露任何 MCP 工具：stdio MCP 是任意命令执行，
+				// HTTP MCP 可作为 SSRF 出口，两者都越过 operator 的权限边界。
+				if !runAdmin && strings.HasPrefix(t.Name(), "mcp__") {
+					continue
+				}
 				out = append(out, t)
 				continue
 			}
 			if !row.Enabled || !contains(row.Agents, agentKey) {
 				continue // disabled globally or not bound to this agent → drop
+			}
+			// 自定义 command/script 工具等价于 Bash；不能随 agent 绑定下放给 operator。
+			if !runAdmin && (row.Kind == "command" || row.Kind == "script") {
+				continue
 			}
 			out = append(out, resolve(t, row))
 		}
@@ -405,7 +415,13 @@ func wireTools(pg *db.DB, domainReg map[string]actool.CoreTool) {
 		ag, _ := pg.GetAgentByKey(agentKey)
 		// localExec 默认 true：取不到 agent 行时按「不禁」处理，绝不因为一次查询失败就把
 		// worker/planner 的 Bash 摘掉（那会让整个任务跑不动）。
-		localExec := ag == nil || ag.LocalExec
+		// 但非管理员发起的运行永远视为 localExec=false：operator 的 task:write 不能
+		// 兑换成宿主命令执行（F-01）。
+		localExec := (ag == nil || ag.LocalExec) && runAdmin
+		if !runAdmin {
+			out = agent.DropHostAccessTools(out)
+			out = dropToolNames(out, platformToolKeys)
+		}
 		// 关掉本地执行 = 摘掉执行类工具。Bash/Write/Edit 这些是 SDK DefaultTools，**没有
 		// tools 表行**，ToolResolve 那条「未绑定即丢弃」管不到它们（rows 里查不到 → 直接
 		// 放行），所以只能在这里显式摘。摘完剩下只读检查类（Read/LS/Glob/Grep）+ 平台工具，
@@ -456,6 +472,20 @@ func wireTools(pg *db.DB, domainReg map[string]actool.CoreTool) {
 		}
 		return out
 	}
+}
+
+func dropToolNames(tools []actool.CoreTool, names []string) []actool.CoreTool {
+	drop := make(map[string]bool, len(names))
+	for _, n := range names {
+		drop[n] = true
+	}
+	out := tools[:0:0]
+	for _, t := range tools {
+		if !drop[t.Name()] {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 func contains(ss []string, v string) bool {

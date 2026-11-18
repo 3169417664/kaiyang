@@ -4,6 +4,20 @@
 
 ## [Unreleased]
 
+### 安全修复（2026-11-18 审计）
+
+- **RBAC**：`traffic:delete` / `intercept:approve` 独立权限；viewer 不能删流量；
+  operator 不能改拦截规则/工具门控/judge 配置；ScopeSentry 数据源写入改为 `mcp:write`。
+- **运行期隔离**：非管理员任务/会话摘除 Bash/Read/Write/job/shell/MCP 与平台高危工具；
+  子任务、触发器会话、Finding 派发会话继承父任务创建者。
+- **认证**：JWT 增加 `jti` 服务端会话绑定，仅有 `jwt.key` 无法伪造管理员；
+  会话改用 HttpOnly Cookie，前端不再把令牌写入 localStorage；初始化竞态与限流修复。
+- **文件与 SSRF**：附件只允许位图 inline（其余强制下载 + sandbox CSP）；
+  知识库上传加上限；MCP/ScopeSentry 增加回环/链路本地拨号守卫。
+- **部署**：Docker 主服务降权为非 root；hostd 安装增加 SHA256 校验；
+  进程环境中的 DSN/API Key/Token 在启动后清洗；自更新支持 Ed25519 签名校验。
+- 详细状态与残余风险见 `docs/security/2026-11-18-审计修复记录.md`。
+
 ## [0.1.0] - 2026-11-18
 
 ### 首版（KAIYANG 缝合版）

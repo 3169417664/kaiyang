@@ -914,6 +914,7 @@ func (e *Engine) SetCustomExecutor(fn func(ctx context.Context, t *Task, executo
 // 没有 pre_agent 的任务同样适用：批准把 executor='review' 转正为 target_executor
 // （open + payload.executor=<agent key>），这里 CAS 领取并交给执行器跑完。
 func (e *Engine) RunApprovedExecutor(ctx context.Context, t *Task, executorKey string, intent *db.Node) error {
+	ctx = agent.WithRunAdmin(ctx, e.taskCreatorAdmin(t))
 	if e == nil || e.customExecutor == nil || t == nil || intent == nil {
 		return fmt.Errorf("自定义执行器未装配")
 	}
@@ -947,7 +948,25 @@ func (e *Engine) RunApprovedExecutor(ctx context.Context, t *Task, executorKey s
 	return runErr
 }
 
+// taskCreatorAdmin 解析任务创建者角色。空 created_by（历史/系统任务）视为
+// 管理员语义；查询失败按非管理员处理（fail-closed），宁可少给能力。
+func (e *Engine) taskCreatorAdmin(t *Task) bool {
+	if t == nil || strings.TrimSpace(t.CreatedBy) == "" {
+		return true
+	}
+	if e.m == nil || e.m.pg == nil {
+		return false
+	}
+	ok, err := e.m.pg.RBACUserIsAdminByUsername(t.CreatedBy)
+	if err != nil {
+		log.Printf("[rbac] 解析任务 %s 创建者角色失败: %v", t.ID, err)
+		return false
+	}
+	return ok
+}
+
 func (e *Engine) Run(ctx context.Context, t *Task) {
+	ctx = agent.WithRunAdmin(ctx, e.taskCreatorAdmin(t))
 	workers := e.m.Workers()
 	if t.WorkerCount > 0 {
 		workers = t.WorkerCount
@@ -1875,6 +1894,7 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 // task pause/delete/shutdown still stops it). Returns an error if the run could not
 // be started; the intent is left untouched in that case.
 func (e *Engine) runDetachedIntent(ctx context.Context, t *Task, intentID int64, requestID, message, agentMessage string) error {
+	ctx = agent.WithRunAdmin(ctx, e.taskCreatorAdmin(t))
 	if !e.beginTaskOperation(t.ID) {
 		return fmt.Errorf("task is being deleted")
 	}

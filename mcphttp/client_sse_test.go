@@ -13,6 +13,8 @@ import (
 )
 
 func TestLegacySSEClientDiscoverAndCall(t *testing.T) {
+	// httptest.NewServer 监听 127.0.0.1；拨号守卫默认拒绝回环，测试显式放行。
+	t.Setenv(mcpAllowLocalEnv, "1")
 	var mu sync.Mutex
 	var stream http.ResponseWriter
 	var flusher http.Flusher

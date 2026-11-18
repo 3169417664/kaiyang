@@ -49,7 +49,7 @@ func (s *Server) launchTask(t *Task, seedText string, seedFirstIntent bool) {
 const goalsDecomposeTimeout = 5 * time.Minute
 
 func (s *Server) startTaskEngine(t *Task) {
-	ctx := s.engine.execContextFor(s.ctx, t.ID)
+	ctx := agent.WithRunAdmin(s.engine.execContextFor(s.ctx, t.ID), s.engine.taskCreatorAdmin(t))
 	if ctx.Err() != nil || s.engine.IsDeleting(t.ID) {
 		return
 	}

@@ -68,7 +68,7 @@ func (s *Server) toolDispatchFindingToAgent() actool.CoreTool {
 			if !created {
 				return jsonResult(map[string]any{"ok": true, "already_invoked": true})
 			}
-			conv, err := s.m.pg.CreateConversation(a.AgentKey, firstLine("Finding: "+f.Summary, 60), nil)
+			conv, err := s.m.pg.CreateConversationOwned(a.AgentKey, firstLine("Finding: "+f.Summary, 60), nil, t.CreatedBy)
 			if err != nil {
 				return actool.Errorf(fmt.Sprintf("创建会话失败: %v", err)), nil
 			}
@@ -165,7 +165,7 @@ func (s *Server) retryFindingInvocations() {
 		if !ok {
 			continue
 		}
-		conv, err := s.m.pg.CreateConversation(it.AgentKey, firstLine("Finding: "+f.Summary, 60), nil)
+		conv, err := s.m.pg.CreateConversationOwned(it.AgentKey, firstLine("Finding: "+f.Summary, 60), nil, t.CreatedBy)
 		if err != nil {
 			continue
 		}

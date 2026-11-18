@@ -3,7 +3,9 @@ package selfupdate
 import (
 	"archive/zip"
 	"context"
+	"crypto/ed25519"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"io"
@@ -119,11 +121,66 @@ func fetchSums(ctx context.Context, c *http.Client, rel *Release) (map[string]st
 	if err != nil {
 		return nil, fmt.Errorf("读取 %s: %w", sumsAsset, err)
 	}
+	if err := verifySumsSignature(ctx, c, rel, raw); err != nil {
+		return nil, err
+	}
 	out := parseSums(string(raw))
 	if len(out) == 0 {
 		return nil, fmt.Errorf("%s 内容为空或格式无法识别", sumsAsset)
 	}
 	return out, nil
+}
+
+// verifySumsSignature 提供独立于 GitHub 账号的信任根。
+//
+// 默认不启用（没有内置发布公钥时维持“同源 SHA256SUMS”语义）；部署方设置
+// KAIYANG_UPDATE_PUBKEY（base64 或 hex 的 Ed25519 公钥）后，Release 必须附带
+// SHA256SUMS.sig（base64 的 Ed25519 签名），否则拒绝升级。这样即使 GitHub
+// 仓库/账号被接管，攻击者也签不出新清单。
+func verifySumsSignature(ctx context.Context, c *http.Client, rel *Release, raw []byte) error {
+	pubText := strings.TrimSpace(os.Getenv("KAIYANG_UPDATE_PUBKEY"))
+	if pubText == "" {
+		return nil
+	}
+	pub, err := decodeUpdatePubKey(pubText)
+	if err != nil {
+		return fmt.Errorf("KAIYANG_UPDATE_PUBKEY 格式错误: %w", err)
+	}
+	sigAsset, ok := rel.FindAsset(sumsAsset + ".sig")
+	if !ok {
+		return fmt.Errorf("已配置升级公钥，但 Release 缺少 %s.sig，拒绝升级", sumsAsset)
+	}
+	body, err := get(ctx, c, sigAsset.URL)
+	if err != nil {
+		return fmt.Errorf("下载 %s.sig: %w", sumsAsset, err)
+	}
+	defer body.Close()
+	sigRaw, err := io.ReadAll(io.LimitReader(body, 4096))
+	if err != nil {
+		return fmt.Errorf("读取 %s.sig: %w", sumsAsset, err)
+	}
+	sig, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(sigRaw)))
+	if err != nil {
+		// 兼容 hex 签名。
+		sig, err = hex.DecodeString(strings.TrimSpace(string(sigRaw)))
+		if err != nil {
+			return fmt.Errorf("%s.sig 不是合法 base64/hex: %w", sumsAsset, err)
+		}
+	}
+	if !ed25519.Verify(pub, raw, sig) {
+		return fmt.Errorf("%s 签名校验失败，拒绝升级", sumsAsset)
+	}
+	return nil
+}
+
+func decodeUpdatePubKey(s string) (ed25519.PublicKey, error) {
+	if b, err := base64.StdEncoding.DecodeString(s); err == nil && len(b) == ed25519.PublicKeySize {
+		return ed25519.PublicKey(b), nil
+	}
+	if b, err := hex.DecodeString(s); err == nil && len(b) == ed25519.PublicKeySize {
+		return ed25519.PublicKey(b), nil
+	}
+	return nil, fmt.Errorf("需要 %d 字节的 base64 或 hex 公钥", ed25519.PublicKeySize)
 }
 
 // parseSums 解析 sha256sum 风格的清单，返回 文件名 → 十六进制摘要。

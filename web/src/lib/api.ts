@@ -144,8 +144,9 @@ import type {
 } from "@/lib/types";
 
 function getToken(): string | null {
-  if (typeof window === "undefined") return null;
-  return localStorage.getItem("kaiyang_token") ?? localStorage.getItem("pojun_token");
+  // 会话令牌在后端下发的 HttpOnly Cookie 中，JS 拿不到也不应拿。保留函数签名
+  // 是为了让所有调用点自然退化为“同源 fetch 自动带 Cookie”。
+  return null;
 }
 
 export async function http<T>(path: string, init?: RequestInit): Promise<T> {
@@ -169,9 +170,13 @@ export async function http<T>(path: string, init?: RequestInit): Promise<T> {
     if (typeof window !== "undefined") {
       localStorage.removeItem("kaiyang_token");
       localStorage.removeItem("pojun_token");
+      localStorage.removeItem("kaiyang_user");
+      localStorage.removeItem("kaiyang_authed");
       document.cookie = "kaiyang_token=; path=/; max-age=0";
       document.cookie = "pojun_token=; path=/; max-age=0";
-      window.location.href = "/login";
+      if (!window.location.pathname.startsWith("/login")) {
+        window.location.href = "/login";
+      }
     }
     throw new Error("未授权");
   }

@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -67,6 +69,39 @@ func envHasValue(raw json.RawMessage) bool {
 		}
 	}
 	return false
+}
+
+// validateMCPURL 拒绝对本机/链路本地/组播地址的 MCP 配置。ScopeSentry 是外部
+// ASM 平台，正常不会部署在回环或云元数据地址上；这类地址只可能是 SSRF 探测。
+// RFC1918 私网仍允许（内网自建 ASM 是合法用法）。
+func validateMCPURL(raw string) error {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Host == "" {
+		return fmt.Errorf("URL 无法解析")
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("仅支持 http/https")
+	}
+	if u.User != nil {
+		return fmt.Errorf("URL 不能包含用户信息")
+	}
+	host := u.Hostname()
+	if strings.EqualFold(host, "localhost") {
+		return fmt.Errorf("不允许回环地址")
+	}
+	// 解析失败不在保存阶段硬拒（离线/内网 DNS 常见）；真正的回环/元数据拦截
+	// 在 mcphttp 的拨号钩子里，DNS 重绑定也覆盖。
+	ips, err := net.LookupIP(host)
+	if err != nil {
+		return nil
+	}
+	for _, ip := range ips {
+		if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
+			ip.IsUnspecified() || ip.IsMulticast() {
+			return fmt.Errorf("不允许本机/链路本地地址")
+		}
+	}
+	return nil
 }
 
 // ---------- GET /api/sync/scopesentry/status ----------
@@ -137,6 +172,10 @@ func (s *Server) syncSSDatasource(w http.ResponseWriter, r *http.Request) {
 		m = &db.MCPServer{Name: scopeSentryMCPName, Transport: "http", Env: json.RawMessage(`{"X-API-Key":""}`)}
 	}
 	if body.URL != "" {
+		if err := validateMCPURL(body.URL); err != nil {
+			writeErr(w, 400, "数据源 URL 不合法："+err.Error())
+			return
+		}
 		m.URL = body.URL
 	}
 	if body.APIKey != "" {
@@ -171,7 +210,7 @@ func (s *Server) syncSSProjects(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	cl, err := s.scopeSentryClient(ctx)
 	if err != nil {
-		writeErr(w, 502, err.Error())
+		writeInternalError(w, "sync scopesentry", err)
 		return
 	}
 	defer cl.Close()
@@ -185,7 +224,8 @@ func (s *Server) syncSSProjects(w http.ResponseWriter, r *http.Request) {
 	}
 	text, err := cl.Call(ctx, "list_projects_data", args)
 	if err != nil {
-		writeErr(w, 502, "list_projects_data 失败: "+err.Error())
+		// 上游错误文本可能包含任意内网响应体片段；不回显给 API 调用方。
+		writeInternalError(w, "sync scopesentry projects", err)
 		return
 	}
 	// {result:{All:[{id,name,logo,AssetCount,tag}], <tag>:[...]}, tag:{...}}
@@ -194,7 +234,7 @@ func (s *Server) syncSSProjects(w http.ResponseWriter, r *http.Request) {
 		Tag    map[string]int             `json:"tag"`
 	}
 	if err := json.Unmarshal([]byte(text), &env); err != nil {
-		writeErr(w, 502, "解析项目列表失败: "+err.Error())
+		writeInternalError(w, "sync scopesentry projects parse", err)
 		return
 	}
 	projects := json.RawMessage("[]")
@@ -214,7 +254,7 @@ func (s *Server) syncSSTasks(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	cl, err := s.scopeSentryClient(ctx)
 	if err != nil {
-		writeErr(w, 502, err.Error())
+		writeInternalError(w, "sync scopesentry", err)
 		return
 	}
 	defer cl.Close()
@@ -228,14 +268,14 @@ func (s *Server) syncSSTasks(w http.ResponseWriter, r *http.Request) {
 	}
 	text, err := cl.Call(ctx, "list_tasks", args)
 	if err != nil {
-		writeErr(w, 502, "list_tasks 失败: "+err.Error())
+		writeInternalError(w, "sync scopesentry tasks", err)
 		return
 	}
 	var env struct {
 		List json.RawMessage `json:"list"`
 	}
 	if err := json.Unmarshal([]byte(text), &env); err != nil {
-		writeErr(w, 502, "解析任务列表失败: "+err.Error())
+		writeInternalError(w, "sync scopesentry tasks parse", err)
 		return
 	}
 	tasks := env.List
@@ -290,7 +330,7 @@ func (s *Server) syncSSRun(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	cl, err := s.scopeSentryClient(ctx)
 	if err != nil {
-		writeErr(w, 502, err.Error())
+		writeInternalError(w, "sync scopesentry", err)
 		return
 	}
 	defer cl.Close()

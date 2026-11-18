@@ -85,6 +85,29 @@ var localExecToolNames = map[string]bool{
 	"Edit":         true,
 	"MultiEdit":    true,
 	"NotebookEdit": true,
+	"job_start":    true, // 后台作业与 Bash 等价
+}
+
+// hostAccessToolNames 是“能读取宿主文件系统或执行本机命令”的全部 SDK 工具。
+// 非管理员运行连只读的 Read/Grep 也要摘：它们能读 /app/jwt.key、config.json、
+// 数据库配置，等同于认证材料泄漏。
+var hostAccessToolNames = map[string]bool{
+	"Bash": true, "Read": true, "LS": true, "Glob": true, "Grep": true,
+	"Write": true, "Edit": true, "MultiEdit": true, "NotebookEdit": true,
+	"job_start": true,
+}
+
+// DropHostAccessTools 用于非管理员发起的 Agent 运行：保留联网测试与图谱工具，
+// 摘掉整个宿主访问面（命令、读写文件、后台作业、PTY）。
+func DropHostAccessTools(tools []actool.CoreTool) []actool.CoreTool {
+	out := make([]actool.CoreTool, 0, len(tools))
+	for _, t := range tools {
+		if hostAccessToolNames[t.Name()] || strings.HasPrefix(t.Name(), "shell_") {
+			continue
+		}
+		out = append(out, t)
+	}
+	return out
 }
 
 // DropLocalExecTools returns tools minus the local-execution ones, for agents whose

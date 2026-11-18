@@ -79,6 +79,18 @@ func permissionForRequest(method, fullPath string) (string, bool) {
 	if strings.HasPrefix(p, "/tasks/") && strings.Contains(p, "/llm") {
 		return crudPerm(method, "llm"), true
 	}
+	// 任务级拦截规则是安全控制面的一部分：读可下放，写仅 admin。
+	if strings.Contains(p, "/intercept-rules") {
+		if method == http.MethodGet || method == http.MethodHead {
+			return "intercept:read", true
+		}
+		return "intercept:write", true
+	}
+	// ScopeSentry 数据源写入 = 配置一个会被服务端连接的 MCP URL，等价于 mcp:write；
+	// 不能借用 asset:write 让 operator 绕过 admin-only 的 MCP 管理。
+	if p == "/sync/scopesentry/datasource" {
+		return "mcp:write", true
+	}
 
 	// 高危能力：admin-only 模块
 	switch {
@@ -122,13 +134,24 @@ func permissionForRequest(method, fullPath string) (string, bool) {
 		strings.HasPrefix(p, "/commands"), strings.HasPrefix(p, "/llm-records"):
 		return crudPerm(method, "task"), true
 	case strings.HasPrefix(p, "/traffic"):
+		// 读与删必须分开：viewer 只有 traffic:read，不能清空证据。
+		if method == http.MethodDelete {
+			return "traffic:delete", true
+		}
 		return "traffic:read", true
 	case strings.HasPrefix(p, "/credentials"):
 		return "credential:read", true
 	case strings.HasPrefix(p, "/assets"), strings.HasPrefix(p, "/companies"), strings.HasPrefix(p, "/sync"):
 		return crudPerm(method, "asset"), true
 	case strings.HasPrefix(p, "/intercept"), strings.HasPrefix(p, "/asset-intercept"):
-		return crudPerm(method, "intercept"), true
+		if method == http.MethodGet || method == http.MethodHead {
+			return "intercept:read", true
+		}
+		// 审批待办可交给 operator；改规则 / 工具门控 / judge 配置仅 admin。
+		if strings.HasPrefix(p, "/intercept/pending/") && strings.HasSuffix(p, "/decide") {
+			return "intercept:approve", true
+		}
+		return "intercept:write", true
 	case strings.HasPrefix(p, "/report-templates"), strings.HasPrefix(p, "/report-assets"):
 		// Phase 5：模板 CRUD 与 Logo 上传/回放归入报告权限；未映射路由默认
 		// admin-only，所以这里必须显式列出。

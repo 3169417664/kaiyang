@@ -115,7 +115,7 @@ func (s *Server) pgCreateConversation(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, fmt.Sprintf("标题最多 %d 个字符", maxConversationTitleRunes))
 		return
 	}
-	c, err := pg.CreateConversation(req.AgentKey, title, req.LLMProfileID)
+	c, err := pg.CreateConversationOwned(req.AgentKey, title, req.LLMProfileID, auditActor(r))
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
@@ -493,7 +493,23 @@ func (s *Server) conversationRunContext(id int64, busyKey string) (context.Conte
 	return ctx, cancel
 }
 
+func (s *Server) conversationCreatorAdmin(c *db.Conversation) bool {
+	if c == nil || strings.TrimSpace(c.CreatedBy) == "" {
+		return true
+	}
+	if s.m == nil || s.m.pg == nil {
+		return false
+	}
+	ok, err := s.m.pg.RBACUserIsAdminByUsername(c.CreatedBy)
+	if err != nil {
+		log.Printf("[rbac] 解析会话 %d 创建者角色失败: %v", c.ID, err)
+		return false
+	}
+	return ok
+}
+
 func (s *Server) runConversationTurn(ctx context.Context, cancel context.CancelCauseFunc, c *db.Conversation, msg, busyKey string) {
+	ctx = agent.WithRunAdmin(ctx, s.conversationCreatorAdmin(c))
 	defer func() {
 		cancel(agent.AbortChatTurnFinished)
 		s.chatMu.Lock()
@@ -802,7 +818,15 @@ func (s *Server) runTriggeredRun(item triggeredRun) {
 		}
 	}()
 	pg := s.m.pg
-	c, err := pg.CreateConversation(item.agentKey, firstLine(item.title, 60), nil)
+	// 触发器会话继承来源任务的创建者，避免 operator 的任务通过自定义 Agent
+	// 触发会话重新获得宿主命令执行。
+	createdBy := ""
+	if item.taskID > 0 {
+		if t, ok := s.m.Task(strconv.FormatInt(item.taskID, 10)); ok {
+			createdBy = t.CreatedBy
+		}
+	}
+	c, err := pg.CreateConversationOwned(item.agentKey, firstLine(item.title, 60), nil, createdBy)
 	if err != nil {
 		log.Printf("[trigger] create conversation for %s failed: %v", item.agentKey, err)
 		return

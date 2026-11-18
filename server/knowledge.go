@@ -42,7 +42,7 @@ func (s *Server) getKnowledge(w http.ResponseWriter, r *http.Request) {
 	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	doc, err := s.m.pg.GetKnowledgeDoc(id)
 	if err != nil {
-		writeErr(w, 500, err.Error())
+		writeInternalError(w, "knowledge", err)
 		return
 	}
 	if doc == nil {
@@ -77,7 +77,7 @@ func (s *Server) createKnowledge(w http.ResponseWriter, r *http.Request) {
 	}
 	id, err := s.m.pg.AddKnowledgeDoc(doc)
 	if err != nil {
-		writeErr(w, 500, "保存失败: "+err.Error())
+		writeInternalError(w, "knowledge save", err)
 		return
 	}
 	go s.indexKnowledgeAsync(id)
@@ -94,7 +94,7 @@ func (s *Server) updateKnowledge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.m.pg.UpdateKnowledgeDoc(id, b.Category, b.Title, b.Content); err != nil {
-		writeErr(w, 500, err.Error())
+		writeInternalError(w, "knowledge", err)
 		return
 	}
 	go s.indexKnowledgeAsync(id)
@@ -106,7 +106,7 @@ func (s *Server) updateKnowledge(w http.ResponseWriter, r *http.Request) {
 func (s *Server) deleteKnowledge(w http.ResponseWriter, r *http.Request) {
 	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err := s.m.pg.DeleteKnowledgeDoc(id); err != nil {
-		writeErr(w, 500, err.Error())
+		writeInternalError(w, "knowledge", err)
 		return
 	}
 	writeJSON(w, 200, map[string]any{"ok": true})
@@ -114,8 +114,12 @@ func (s *Server) deleteKnowledge(w http.ResponseWriter, r *http.Request) {
 
 // POST /api/knowledge/upload — multipart: file + scope + task_id + category.
 func (s *Server) uploadKnowledge(w http.ResponseWriter, r *http.Request) {
+	// ParseMultipartForm 的 32MB 只是内存阈值，超出部分会落到临时目录；没有
+	// MaxBytesReader 时请求体总量不受限，认证用户可反复上传巨型 multipart
+	// 把磁盘/临时目录写满。这里给整个请求体设硬上限。
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<20)
 	if err := r.ParseMultipartForm(32 << 20); err != nil {
-		writeErr(w, 400, "上传解析失败")
+		writeErr(w, 400, "上传解析失败或超出大小限制")
 		return
 	}
 	file, hdr, err := r.FormFile("file")
@@ -160,7 +164,7 @@ func (s *Server) uploadKnowledge(w http.ResponseWriter, r *http.Request) {
 	}
 	id, err := s.m.pg.AddKnowledgeDoc(doc)
 	if err != nil {
-		writeErr(w, 500, "保存失败: "+err.Error())
+		writeInternalError(w, "knowledge save", err)
 		return
 	}
 	go s.indexKnowledgeAsync(id)
@@ -173,7 +177,7 @@ func (s *Server) knowledgeCategories(w http.ResponseWriter, r *http.Request) {
 	taskID, _ := strconv.ParseInt(r.URL.Query().Get("task"), 10, 64)
 	cats, err := s.m.pg.ListKnowledgeCategories(taskID)
 	if err != nil {
-		writeErr(w, 500, err.Error())
+		writeInternalError(w, "knowledge", err)
 		return
 	}
 	writeJSON(w, 200, cats)
@@ -192,7 +196,7 @@ func (s *Server) searchKnowledge(w http.ResponseWriter, r *http.Request) {
 	}
 	hits, mode, err := s.kb().SearchAndLog(s.ctx, b.Query, b.TaskID, b.TopK, "手动检索")
 	if err != nil {
-		writeErr(w, 500, err.Error())
+		writeInternalError(w, "knowledge", err)
 		return
 	}
 	writeJSON(w, 200, map[string]any{"mode": mode, "hits": hits})
@@ -202,7 +206,7 @@ func (s *Server) searchKnowledge(w http.ResponseWriter, r *http.Request) {
 func (s *Server) knowledgeLogs(w http.ResponseWriter, r *http.Request) {
 	logs, err := s.m.pg.ListKnowledgeRetrievalLogs(200)
 	if err != nil {
-		writeErr(w, 500, err.Error())
+		writeInternalError(w, "knowledge", err)
 		return
 	}
 	writeJSON(w, 200, logs)
@@ -212,7 +216,7 @@ func (s *Server) knowledgeLogs(w http.ResponseWriter, r *http.Request) {
 func (s *Server) getKnowledgeConfig(w http.ResponseWriter, r *http.Request) {
 	cfg, err := s.m.pg.GetKnowledgeConfig()
 	if err != nil {
-		writeErr(w, 500, err.Error())
+		writeInternalError(w, "knowledge", err)
 		return
 	}
 	global, task, _ := s.m.pg.KnowledgeDocCount()
@@ -253,7 +257,7 @@ func (s *Server) saveKnowledgeConfig(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 400, err.Error())
 			return
 		}
-		writeErr(w, 500, err.Error())
+		writeInternalError(w, "knowledge", err)
 		return
 	}
 	writeJSON(w, 200, map[string]any{"ok": true})
