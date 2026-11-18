@@ -393,10 +393,11 @@ func mergeReportIntoTargetTx(ctx context.Context, tx *sql.Tx, targetID int64, in
     ELSE severity END,
   asset_ids = $4::jsonb,
   root_cause_key = CASE WHEN COALESCE(root_cause_key,'')='' THEN $5 ELSE root_cause_key END,
+  reproduction = CASE WHEN $6::text <> '' THEN $6::jsonb ELSE reproduction END,
   merge_count = merge_count + 1,
   last_merged_at = now(),
   evidence_version = evidence_version + 1
-WHERE id=$1`, targetID, appendix, in.Severity, assetsJSONString(assets), root); err != nil {
+WHERE id=$1`, targetID, appendix, in.Severity, assetsJSONString(assets), root, validReproductionJSON(in.Reproduction)); err != nil {
 		return nil, err
 	}
 	if err := appendEvidenceToFindingNodeTx(tx, nodeID, appendix, in.Severity, assets); err != nil {

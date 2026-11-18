@@ -129,6 +129,10 @@ func permissionForRequest(method, fullPath string) (string, bool) {
 		return crudPerm(method, "asset"), true
 	case strings.HasPrefix(p, "/intercept"), strings.HasPrefix(p, "/asset-intercept"):
 		return crudPerm(method, "intercept"), true
+	case strings.HasPrefix(p, "/report-templates"), strings.HasPrefix(p, "/report-assets"):
+		// Phase 5：模板 CRUD 与 Logo 上传/回放归入报告权限；未映射路由默认
+		// admin-only，所以这里必须显式列出。
+		return crudPerm(method, "report"), true
 	case strings.HasPrefix(p, "/report"), strings.HasPrefix(p, "/reports"):
 		return crudPerm(method, "report"), true
 	case strings.HasPrefix(p, "/knowledge"):

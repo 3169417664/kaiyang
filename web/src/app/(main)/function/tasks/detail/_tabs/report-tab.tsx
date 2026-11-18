@@ -10,6 +10,7 @@ import { Markdown } from "@/components/markdown";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { api } from "@/lib/api";
+import type { ReportTemplate } from "@/lib/types";
 import { copyText } from "@/lib/utils";
 
 export function ReportTab({ taskId }: { taskId: string }) {
@@ -18,6 +19,13 @@ export function ReportTab({ taskId }: { taskId: string }) {
   const [copied, setCopied] = React.useState(false);
   const [exporting, setExporting] = React.useState(false);
   const [generating, setGenerating] = React.useState(false);
+  const [templates, setTemplates] = React.useState<ReportTemplate[]>([]);
+  const [templateId, setTemplateId] = React.useState<number>(0);
+  const [includeFixed, setIncludeFixed] = React.useState(false);
+
+  React.useEffect(() => {
+    api.reportTemplates().then(setTemplates).catch(() => setTemplates([]));
+  }, []);
 
   React.useEffect(() => {
     let active = true;
@@ -79,14 +87,30 @@ export function ReportTab({ taskId }: { taskId: string }) {
         <CardTitle className="flex items-center gap-2 text-sm">
           <FileTextIcon className="size-4" /> 渗透测试报告（Markdown）
         </CardTitle>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <select
+            className="h-7 rounded-md border bg-background px-2 text-sm"
+            value={templateId}
+            onChange={(e) => setTemplateId(Number(e.target.value) || 0)}
+            title="报告模板"
+          >
+            <option value={0}>默认设置</option>
+            {templates.map((t) => (
+              <option key={t.id} value={t.id}>{t.name}</option>
+            ))}
+          </select>
+          <label className="flex items-center gap-1 text-xs text-muted-foreground">
+            <input type="checkbox" checked={includeFixed} onChange={(e) => setIncludeFixed(e.target.checked)} />
+            含已修复
+          </label>
           <Button
             size="sm"
             disabled={generating}
             onClick={async () => {
               setGenerating(true);
               try {
-                const r = await api.generateReport(taskId);
+                const statuses = includeFixed ? ["confirmed", "resolved", "fixed"] : ["confirmed"];
+                const r = await api.generateReport(taskId, undefined, undefined, templateId, statuses);
                 toast.success(`已提交交付报告生成（#${r.report_id}），请到「系统 → 报告管理」下载`);
               } catch (e) {
                 toast.error(`生成失败：${(e as Error).message}`);

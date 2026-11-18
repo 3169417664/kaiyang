@@ -21,9 +21,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/Autumn-27/norma/llm"
-	actool "github.com/Autumn-27/norma/tool"
-	"github.com/Autumn-27/norma/transcript"
 	"github.com/3169417664/kaiyang/agent"
 	"github.com/3169417664/kaiyang/db"
 	"github.com/3169417664/kaiyang/hostd"
@@ -33,6 +30,9 @@ import (
 	"github.com/3169417664/kaiyang/llmrec"
 	"github.com/3169417664/kaiyang/report"
 	"github.com/3169417664/kaiyang/traffic"
+	"github.com/Autumn-27/norma/llm"
+	actool "github.com/Autumn-27/norma/tool"
+	"github.com/Autumn-27/norma/transcript"
 )
 
 // BuildVersion is the backend application version, injected from cmd/pojun at
@@ -957,12 +957,19 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/report", s.getReport)
 	mux.HandleFunc("GET /api/report-settings", s.getReportSettings)
 	mux.HandleFunc("PUT /api/report-settings", s.putReportSettings)
+	mux.HandleFunc("GET /api/report-templates", s.listReportTemplates)
+	mux.HandleFunc("POST /api/report-templates", s.createReportTemplate)
+	mux.HandleFunc("PUT /api/report-templates/{id}", s.updateReportTemplate)
+	mux.HandleFunc("DELETE /api/report-templates/{id}", s.deleteReportTemplate)
+	mux.HandleFunc("POST /api/report-assets/logo", s.uploadReportLogo)
+	mux.HandleFunc("GET /api/report-assets/{file}", s.serveReportAsset)
 	mux.HandleFunc("GET /api/reports", s.listReports)
 	mux.HandleFunc("POST /api/reports/generate", s.generateReportHandler)
 	mux.HandleFunc("GET /api/reports/{id}", s.getReportStatus)
 	mux.HandleFunc("GET /api/reports/{id}/download", s.downloadReport)
 	mux.HandleFunc("DELETE /api/reports/{id}", s.deleteReport)
 	mux.HandleFunc("GET /api/findings/{id}/enrichment", s.getFindingEnrichment)
+	mux.HandleFunc("POST /api/findings/{id}/enrich", s.enrichFindingHandler)
 	mux.HandleFunc("PUT /api/findings/{id}/enrichment", s.putFindingEnrichment)
 	mux.HandleFunc("PUT /api/findings/{id}/reproduction", s.putFindingReproduction)
 	mux.HandleFunc("GET /api/report/export", s.exportTaskDocx)
@@ -2728,6 +2735,10 @@ func (s *Server) patchFinding(w http.ResponseWriter, r *http.Request) {
 		}
 		if !notified && from != *body.Status {
 			log.Printf("[notify] 状态变更事件未登记 finding=%d %s→%s（状态已更新）", id, from, *body.Status)
+		}
+		// 改为 confirmed 时后台自动富化一次（失败静默；已有富化则跳过）。
+		if *body.Status == db.FindingConfirmed && from != db.FindingConfirmed {
+			s.triggerAutoEnrich(id)
 		}
 	}
 	if body.Severity != nil {
