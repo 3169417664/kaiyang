@@ -63,6 +63,7 @@ import type {
   KnowledgeHit,
   KnowledgeConfig,
   TopologyData,
+  IntranetCredential,
   IntentAsset,
   InterceptApprovalFilter,
   InterceptApprovalRow,
@@ -1104,6 +1105,14 @@ export const api = {
     if (!r.ok) throw new Error(`report: ${r.status}`);
     return r.text();
   },
+  // ---- 内网凭据 ----
+  intranetCredentials: (params: { company_id?: number; limit?: number; offset?: number } = {}) => {
+    const q = new URLSearchParams();
+    for (const [k, v] of Object.entries(params)) if (v !== undefined) q.set(k, String(v));
+    const s = q.toString();
+    return get<{ credentials: IntranetCredential[]; total: number }>(`/credentials/intranet${s ? `?${s}` : ""}`);
+  },
+
   // ---- 内网拓扑 ----
   topology: (taskId: string) => get<TopologyData>(`/tasks/${encodeURIComponent(taskId)}/topology`),
   upsertTopologyNode: (taskId: string, n: { ip: string; hostname?: string; display_label?: string; notes?: string; x?: number; y?: number }) =>
