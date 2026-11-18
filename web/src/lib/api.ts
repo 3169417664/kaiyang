@@ -66,6 +66,9 @@ import type {
   KnowledgeHit,
   KnowledgeConfig,
   TopologyData,
+  TopologyEdge,
+  TopologyGroup,
+  TopologyNote,
   IntranetCredential,
   IntentAsset,
   InterceptApprovalFilter,
@@ -1118,12 +1121,33 @@ export const api = {
 
   // ---- 内网拓扑 ----
   topology: (taskId: string) => get<TopologyData>(`/tasks/${encodeURIComponent(taskId)}/topology`),
-  upsertTopologyNode: (taskId: string, n: { ip: string; hostname?: string; display_label?: string; notes?: string; x?: number; y?: number }) =>
-    post<{ ok: boolean }>(`/tasks/${encodeURIComponent(taskId)}/topology/nodes`, n),
+  upsertTopologyNode: (taskId: string, n: { ip: string; hostname?: string; display_label?: string; group_id?: number | null; notes?: string; x?: number; y?: number }) =>
+    post<{ ok: boolean; ip: string }>(`/tasks/${encodeURIComponent(taskId)}/topology/nodes`, n),
+  patchTopologyNode: (
+    taskId: string,
+    ip: string,
+    body: { hostname?: string; display_label?: string; group_id?: number | null; notes?: string; x?: number; y?: number },
+  ) => patch<{ ok: boolean }>(`/tasks/${encodeURIComponent(taskId)}/topology/nodes/${encodeURIComponent(ip)}`, body),
   deleteTopologyNode: (taskId: string, ip: string) =>
     del<{ ok: boolean }>(`/tasks/${encodeURIComponent(taskId)}/topology/nodes/${encodeURIComponent(ip)}`),
   addTopologyEdge: (taskId: string, e: { src_ip: string; dst_ip: string; label?: string }) =>
-    post<{ id: number }>(`/tasks/${encodeURIComponent(taskId)}/topology/edges`, e),
+    post<TopologyEdge>(`/tasks/${encodeURIComponent(taskId)}/topology/edges`, e),
+  patchTopologyEdge: (taskId: string, id: number, e: { label?: string; src_ip?: string; dst_ip?: string }) =>
+    patch<{ ok: boolean }>(`/tasks/${encodeURIComponent(taskId)}/topology/edges/${id}`, e),
+  deleteTopologyEdge: (taskId: string, id: number) =>
+    del<{ ok: boolean }>(`/tasks/${encodeURIComponent(taskId)}/topology/edges/${id}`),
+  addTopologyGroup: (taskId: string, g: { name: string; color?: string }) =>
+    post<TopologyGroup>(`/tasks/${encodeURIComponent(taskId)}/topology/groups`, g),
+  patchTopologyGroup: (taskId: string, id: number, g: { name?: string; color?: string }) =>
+    patch<{ ok: boolean }>(`/tasks/${encodeURIComponent(taskId)}/topology/groups/${id}`, g),
+  deleteTopologyGroup: (taskId: string, id: number) =>
+    del<{ ok: boolean }>(`/tasks/${encodeURIComponent(taskId)}/topology/groups/${id}`),
+  addTopologyNote: (taskId: string, n: { content: string; x?: number; y?: number }) =>
+    post<TopologyNote>(`/tasks/${encodeURIComponent(taskId)}/topology/notes`, n),
+  patchTopologyNote: (taskId: string, id: number, n: { content?: string; x?: number; y?: number }) =>
+    patch<{ ok: boolean }>(`/tasks/${encodeURIComponent(taskId)}/topology/notes/${id}`, n),
+  deleteTopologyNote: (taskId: string, id: number) =>
+    del<{ ok: boolean }>(`/tasks/${encodeURIComponent(taskId)}/topology/notes/${id}`),
 
   // ---- 知识库 ----
   knowledgeDocs: (scope = "global", task?: string) => {
