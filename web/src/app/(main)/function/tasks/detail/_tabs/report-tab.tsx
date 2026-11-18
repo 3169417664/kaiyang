@@ -17,6 +17,7 @@ export function ReportTab({ taskId }: { taskId: string }) {
   const [loading, setLoading] = React.useState(true);
   const [copied, setCopied] = React.useState(false);
   const [exporting, setExporting] = React.useState(false);
+  const [generating, setGenerating] = React.useState(false);
 
   React.useEffect(() => {
     let active = true;
@@ -79,6 +80,24 @@ export function ReportTab({ taskId }: { taskId: string }) {
           <FileTextIcon className="size-4" /> 渗透测试报告（Markdown）
         </CardTitle>
         <div className="flex gap-2">
+          <Button
+            size="sm"
+            disabled={generating}
+            onClick={async () => {
+              setGenerating(true);
+              try {
+                const r = await api.generateReport(taskId);
+                toast.success(`已提交交付报告生成（#${r.report_id}），请到「系统 → 报告管理」下载`);
+              } catch (e) {
+                toast.error(`生成失败：${(e as Error).message}`);
+              } finally {
+                setGenerating(false);
+              }
+            }}
+          >
+            {generating ? <Spinner data-icon="inline-start" /> : <FileTextIcon />}
+            {generating ? "提交中…" : "生成交付报告"}
+          </Button>
           {report && (
             <Button size="sm" variant="outline" onClick={copy}>
               {copied ? <CheckIcon /> : <CopyIcon />} 复制

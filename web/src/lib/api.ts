@@ -56,6 +56,9 @@ import type {
   RbacMe,
   RbacRole,
   RbacUser,
+  ReportRecord,
+  ReportSettings,
+  FindingEnrichment,
   IntentAsset,
   InterceptApprovalFilter,
   InterceptApprovalRow,
@@ -1097,6 +1100,20 @@ export const api = {
     if (!r.ok) throw new Error(`report: ${r.status}`);
     return r.text();
   },
+  // ---- 交付报告（docx 管理）----
+  reportSettings: () => get<ReportSettings>("/report-settings"),
+  saveReportSettings: (s: ReportSettings) => put<{ ok: boolean }>("/report-settings", s),
+  reports: () => get<{ reports: ReportRecord[] }>("/reports").then((r) => r.reports ?? []),
+  generateReport: (taskId: string, findingIds?: number[], company?: string) =>
+    post<{ report_id: number; status: string }>("/reports/generate", { task_id: taskId, finding_ids: findingIds, company }),
+  reportStatus: (id: number) => get<ReportRecord>(`/reports/${id}`),
+  deleteReport: (id: number) => del<{ ok: boolean }>(`/reports/${id}`),
+  findingEnrichment: (id: number) =>
+    get<{ enrichment: FindingEnrichment | null; reproduction: unknown }>(`/findings/${id}/enrichment`),
+  saveFindingEnrichment: (id: number, e: FindingEnrichment) => put<{ ok: boolean }>(`/findings/${id}/enrichment`, e),
+  saveFindingReproduction: (id: number, reproduction: unknown) =>
+    put<{ ok: boolean }>(`/findings/${id}/reproduction`, reproduction),
+
   // 任务总报告 Word 导出(浏览器侧触发下载;需带 JWT)
   downloadTaskDocx: async (task: string) => {
     const token = getToken();
