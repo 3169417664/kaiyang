@@ -3289,6 +3289,11 @@ function CreateTaskSheet({
   const [heartbeatMin, setHeartbeatMin] = React.useState("10"); // planner 心跳(分钟);默认10,下限10(与后端一致)
   const [seedFirstIntent, setSeedFirstIntent] = React.useState(false); // 创建时下发种子意图,worker 免等首轮 planner 直接开跑;默认关闭,走标准先规划再执行
   const [coverageEnabled, setCoverageEnabled] = React.useState(true); // 资产覆盖度功能;默认开。关闭=不计算/展示覆盖度、不累积范围、隐藏范围类工具(company 关联不受影响)
+  // 审核：undefined=跟随分类预设；显式 true/false 才覆盖。
+  const [reviewEnabled, setReviewEnabled] = React.useState<boolean | undefined>(undefined);
+  const [reviewAuto, setReviewAuto] = React.useState(false);
+  const [workerCount, setWorkerCount] = React.useState(""); // 0/空=跟随全局
+  const [assetMode, setAssetMode] = React.useState(""); // 空=跟随分类/默认 pentest
   const [interceptRules, setInterceptRules] = React.useState<AssetInterceptRuleInput[]>([]); // 任务级资产拦截规则(仅本任务生效,不进全局表)
   // 任务级目标登录凭据（v0.4.8）：worker 先登录再测；密码/TOTP 只进 DB，不回显。
   const [authCfg, setAuthCfg] = React.useState<TaskAuthConfigInput>({
@@ -3370,6 +3375,10 @@ function CreateTaskSheet({
         seedFirstIntent,
         planHeartbeatSeconds: heartbeatSec,
         coverageEnabled,
+        reviewEnabled,
+        reviewAuto,
+        workerCount: workerCount.trim() === "" ? undefined : Number(workerCount),
+        assetMode: assetMode || undefined,
         interceptRules: interceptRules
           .map((r) => ({ ...r, pattern: r.pattern.trim() }))
           .filter((r) => r.pattern !== ""),
@@ -3697,6 +3706,50 @@ function CreateTaskSheet({
                     默认开启：计算并展示测试覆盖度、态势图显示测试进度、自动累积测试范围。关闭后不再计算/展示覆盖度，
                     态势图仅展示资产不显示进度，agent 也不再获得范围类工具。关闭不影响「关联企业资产范围」。
                   </p>
+                </div>
+                <div className="grid gap-2">
+                  <label htmlFor="review-enabled" className="flex items-center gap-2 text-sm">
+                    <Checkbox
+                      id="review-enabled"
+                      checked={!!reviewEnabled}
+                      onCheckedChange={(v) => setReviewEnabled(!!v)}
+                    />
+                    开启意图审核
+                  </label>
+                  <p className="text-muted-foreground text-xs">
+                    开启后 planner 必须送审，人工批准前 worker 不执行。未手动勾选时跟随场景分类默认值
+                    （内网渗透/权限提升/漏洞利用默认开启）。
+                  </p>
+                  {reviewEnabled && (
+                    <label className="flex items-center gap-2 text-sm">
+                      <Checkbox checked={reviewAuto} onCheckedChange={(v) => setReviewAuto(!!v)} />
+                      自动处置（AI 预审通过后自动批准；当前保留开关）
+                    </label>
+                  )}
+                </div>
+                <div className="grid gap-2">
+                  <label htmlFor="worker-count" className="text-sm">任务级 worker 数</label>
+                  <Input
+                    id="worker-count"
+                    value={workerCount}
+                    onChange={(e) => setWorkerCount(e.target.value.replace(/[^0-9]/g, ""))}
+                    placeholder="留空=跟随全局；1–16"
+                    inputMode="numeric"
+                  />
+                </div>
+                <div className="grid gap-2">
+                  <label htmlFor="asset-mode" className="text-sm">资产模式</label>
+                  <select
+                    id="asset-mode"
+                    className="h-9 rounded-md border bg-background px-3 text-sm"
+                    value={assetMode}
+                    onChange={(e) => setAssetMode(e.target.value)}
+                  >
+                    <option value="">跟随场景分类</option>
+                    <option value="pentest">渗透测试</option>
+                    <option value="vuln_hunting">漏洞挖掘</option>
+                    <option value="code_audit">代码审计</option>
+                  </select>
                 </div>
               </CollapsibleContent>
             </Collapsible>

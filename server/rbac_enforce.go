@@ -112,6 +112,8 @@ func permissionForRequest(method, fullPath string) (string, bool) {
 		return "workspace:write", true
 	case strings.HasPrefix(p, "/exploration/findings"), strings.HasPrefix(p, "/findings"):
 		return crudPerm(method, "finding"), true
+	case strings.HasPrefix(p, "/planner-templates"), strings.HasPrefix(p, "/worker-templates"):
+		return crudPerm(method, "task"), true
 	case strings.HasPrefix(p, "/exploration"), strings.HasPrefix(p, "/tasks"),
 		strings.HasPrefix(p, "/task-categories"), strings.HasPrefix(p, "/task-templates"),
 		strings.HasPrefix(p, "/task-archives"), strings.HasPrefix(p, "/active"),

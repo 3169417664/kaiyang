@@ -176,6 +176,12 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		taskAgents: map[string]*taskAgentBundle{}, archiveWake: make(chan struct{}, 1)}
 	s.jwtKey.Store(key)
 	s.bootstrapRBAC()
+	s.seedFusion()
+	// 模板库默认正文作为提示词四级链的第③级（任务快照 > 全局覆盖 > 模板默认 > 内置）。
+	if m.pg != nil {
+		agent.PlannerTemplateDefault = func() string { return m.pg.DefaultPromptTemplateBody("planner") }
+		agent.WorkerTemplateDefault = func() string { return m.pg.DefaultPromptTemplateBody("worker") }
+	}
 	s.listeners = listener.NewManager()
 	agent.SetListenerManager(s.listeners)
 	agent.SetConnectBackResolver(func(port int) agent.ConnectBack {
@@ -742,11 +748,26 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PATCH /api/task-categories/{id}", s.pgRenameTaskCategory)
 	mux.HandleFunc("DELETE /api/task-categories/{id}", s.pgDeleteTaskCategory)
 	mux.HandleFunc("POST /api/tasks/category/batch", s.updateTasksCategoryBatch)
+	mux.HandleFunc("GET /api/planner-templates", s.listPromptTemplates("planner"))
+	mux.HandleFunc("POST /api/planner-templates", s.createPromptTemplate("planner"))
+	mux.HandleFunc("PUT /api/planner-templates/{id}", s.updatePromptTemplate("planner"))
+	mux.HandleFunc("DELETE /api/planner-templates/{id}", s.deletePromptTemplate("planner"))
+	mux.HandleFunc("POST /api/planner-templates/{id}/default", s.setDefaultPromptTemplate("planner"))
+	mux.HandleFunc("GET /api/worker-templates", s.listPromptTemplates("worker"))
+	mux.HandleFunc("POST /api/worker-templates", s.createPromptTemplate("worker"))
+	mux.HandleFunc("PUT /api/worker-templates/{id}", s.updatePromptTemplate("worker"))
+	mux.HandleFunc("DELETE /api/worker-templates/{id}", s.deletePromptTemplate("worker"))
+	mux.HandleFunc("POST /api/worker-templates/{id}/default", s.setDefaultPromptTemplate("worker"))
+
 	mux.HandleFunc("GET /api/task-templates", s.pgListTaskTemplates)
 	mux.HandleFunc("POST /api/task-templates", s.pgCreateTaskTemplate)
 	mux.HandleFunc("PATCH /api/task-templates/{id}", s.pgUpdateTaskTemplate)
 	mux.HandleFunc("DELETE /api/task-templates/{id}", s.pgDeleteTaskTemplate)
 	mux.HandleFunc("GET /api/tasks/{id}", s.getTask)
+	mux.HandleFunc("PUT /api/tasks/{id}/review/config", s.reviewConfig)
+	mux.HandleFunc("GET /api/tasks/{id}/review/proposed", s.reviewListProposed)
+	mux.HandleFunc("POST /api/tasks/{id}/review/{intentID}/approve", s.reviewApprove)
+	mux.HandleFunc("POST /api/tasks/{id}/review/{intentID}/reject", s.reviewReject)
 	mux.HandleFunc("PATCH /api/tasks/{id}", s.updateTaskMetadata)
 	mux.HandleFunc("PATCH /api/tasks/{id}/category", s.updateTaskCategory)
 	// 任务级资产拦截/允许规则
@@ -1631,6 +1652,17 @@ type createTaskReq struct {
 	// AuthConfig 任务级目标登录凭据（v0.4.8）：worker 先登录再测；创建后可用
 	// POST /api/tasks/{id}/auth-check 做一次登录自检。密码/TOTP 只进 DB。
 	AuthConfig *db.TaskAuthConfig `json:"auth_config,omitempty"`
+
+	// KAIYANG 审核 / 场景模板
+	ReviewEnabled     *bool  `json:"review_enabled,omitempty"`
+	ReviewAuto        *bool  `json:"review_auto,omitempty"`
+	WorkerCount       int    `json:"worker_count,omitempty"`
+	AssetMode         string `json:"asset_mode,omitempty"`
+	PreAgent          string `json:"pre_agent,omitempty"`
+	PlannerTemplateID *int64 `json:"planner_template_id,omitempty"`
+	WorkerTemplateID  *int64 `json:"worker_template_id,omitempty"`
+	PlannerPrompt     string `json:"planner_prompt,omitempty"`
+	WorkerPrompt      string `json:"worker_prompt,omitempty"`
 }
 
 func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
@@ -1688,6 +1720,56 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	reviewEnabled := false
+	if req.ReviewEnabled != nil {
+		reviewEnabled = *req.ReviewEnabled
+	}
+	reviewAuto := false
+	if req.ReviewAuto != nil {
+		reviewAuto = *req.ReviewAuto
+	}
+	// 分类即场景预设：未显式传审核/模板时，按分类默认值带出。
+	var categoryPreset *db.TaskCategoryPreset
+	if req.CategoryID != nil {
+		categoryPreset, _ = s.m.pg.GetTaskCategoryPreset(*req.CategoryID)
+	}
+	if req.ReviewEnabled == nil && categoryPreset != nil {
+		reviewEnabled = categoryPreset.ReviewEnabled
+	}
+	if req.PlannerTemplateID == nil && categoryPreset != nil && categoryPreset.PlannerTemplateID > 0 {
+		id := categoryPreset.PlannerTemplateID
+		req.PlannerTemplateID = &id
+	}
+	if req.WorkerTemplateID == nil && categoryPreset != nil && categoryPreset.WorkerTemplateID > 0 {
+		id := categoryPreset.WorkerTemplateID
+		req.WorkerTemplateID = &id
+	}
+	if strings.TrimSpace(req.AssetMode) == "" && categoryPreset != nil && categoryPreset.AssetMode != "" {
+		req.AssetMode = categoryPreset.AssetMode
+	}
+	plannerPrompt := strings.TrimSpace(req.PlannerPrompt)
+	if plannerPrompt == "" && req.PlannerTemplateID != nil && *req.PlannerTemplateID > 0 {
+		if tpl, e := s.m.pg.GetPromptTemplate("planner", *req.PlannerTemplateID); e == nil {
+			plannerPrompt = tpl.Body
+		}
+	}
+	workerPrompt := strings.TrimSpace(req.WorkerPrompt)
+	if workerPrompt == "" && req.WorkerTemplateID != nil && *req.WorkerTemplateID > 0 {
+		if tpl, e := s.m.pg.GetPromptTemplate("worker", *req.WorkerTemplateID); e == nil {
+			workerPrompt = tpl.Body
+		}
+	}
+	workerCount := req.WorkerCount
+	if workerCount < 0 {
+		workerCount = 0
+	}
+	if workerCount > 16 {
+		workerCount = 16
+	}
+	assetMode := strings.TrimSpace(req.AssetMode)
+	if assetMode == "" {
+		assetMode = "pentest"
+	}
 	t, err := s.m.CreateTaskWithOptions(req.Description, req.Goal, db.TaskCreateOptions{
 		Name: strings.TrimSpace(req.Name), CategoryID: req.CategoryID,
 		SourceTaskIDs: sourceIDs, CompanyIDs: req.CompanyIDs, LLMProfileIDs: req.LLMProfileIDs,
@@ -1695,6 +1777,10 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 		CoverageEnabled: req.CoverageEnabled,
 		InterceptRules:  interceptRules,
 		AuthConfig:      req.AuthConfig,
+		ReviewEnabled:   reviewEnabled, ReviewAuto: reviewAuto,
+		PlannerPromptOverride: plannerPrompt, WorkerPromptOverride: workerPrompt,
+		WorkerCount: workerCount, AssetMode: assetMode, PreAgent: strings.TrimSpace(req.PreAgent),
+		CreatedBy: auditActor(r),
 	})
 	if err != nil {
 		if errors.Is(err, db.ErrTaskCategoryInvalid) || errors.Is(err, db.ErrTaskCategoryNotFound) {

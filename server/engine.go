@@ -904,6 +904,9 @@ func (e *Engine) ReadyFor(t *Task) bool {
 // automatically once LLM is set from the UI).
 func (e *Engine) Run(ctx context.Context, t *Task) {
 	workers := e.m.Workers()
+	if t.WorkerCount > 0 {
+		workers = t.WorkerCount
+	}
 	e.deleteMu.RLock()
 	if e.IsDeleting(t.ID) {
 		e.deleteMu.RUnlock()
@@ -946,7 +949,9 @@ func (e *Engine) Run(ctx context.Context, t *Task) {
 	// ⚠️ 不能用 Frontier(只数 open):worker 领取(open→running)与本检查存在竞态,会误 kick。
 	// 重启自动恢复时也可能只剩 running 意图,同样应跳过。
 	if has, _ := t.Store.HasActiveIntent(); !has {
-		t.Notify() // kick the first planning round (acted on once LLM is ready)
+		if proposed, _ := t.Store.HasProposedIntent(); !proposed {
+			t.Notify() // kick the first planning round (acted on once LLM is ready)
+		}
 	}
 }
 
@@ -1151,6 +1156,11 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 			return // user-paused: don't plan
 		}
 		if e.IsDeleting(t.ID) {
+			return
+		}
+		// 有待审意图时 planner 不再派新单：审核是闸门，避免队列越积越多。
+		// 批准/驳回后会 Notify 唤醒本循环继续。
+		if has, _ := t.Store.HasProposedIntent(); has {
 			return
 		}
 		// terminal task (goals all met → done, or failed): the run is over. A

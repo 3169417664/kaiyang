@@ -95,6 +95,10 @@ type Worker struct {
 	// maxTokensFn resolves the per-reply output cap in tokens, on the same
 	// per-run basis. nil or 0 = send no cap and let the endpoint decide.
 	maxTokensFn func() int
+	// taskPromptOverride 是任务级提示词快照（最高优先级）。
+	taskPromptOverride string
+	// reviewEnabledFn 返回任务是否开启意图审核（每轮读取）。
+	reviewEnabledFn func() bool
 }
 
 // WorkerSessionID returns the stable transcript key used by a worker intent.
@@ -160,6 +164,12 @@ func (w *Worker) SetRunTimeout(run time.Duration) {
 
 // SetTaskAuthBlock 设置任务级登录凭据渲染块（host 装配时调用；空串=不注入）。
 func (w *Worker) SetTaskAuthBlock(block string) { w.taskAuthBlock = block }
+
+// SetTaskPromptOverride 注入任务级提示词快照。
+func (w *Worker) SetTaskPromptOverride(body string) { w.taskPromptOverride = body }
+
+// SetReviewEnabled 注入任务级审核开关（每轮读取）。
+func (w *Worker) SetReviewEnabled(fn func() bool) { w.reviewEnabledFn = fn }
 
 // SetArtifactRecorder 注入证据附件存储（host 实现）。
 func (w *Worker) SetArtifactRecorder(r ArtifactRecorder) { w.artifactRecorder = r }
@@ -323,8 +333,14 @@ func ensureRunDir(base string, taskID, intentID int64) string {
 // cmdOutDir is the SDK large-tool-output spill dir under an agent's run dir.
 func cmdOutDir(dir string) string { return filepath.Join(dir, "cmd-output") }
 
-func workerSystem(proxyAddr, caCert, dataDir, runDir string) string {
-	body := renderSystem("worker", workerDefaultTmpl, WorkerVars{ProxyAddr: proxyAddr, DataDir: dataDir, Now: nowStr()})
+func workerSystem(proxyAddr, caCert, dataDir, runDir, taskOverride string) string {
+	def := workerDefaultTmpl
+	if WorkerTemplateDefault != nil {
+		if b := WorkerTemplateDefault(); strings.TrimSpace(b) != "" {
+			def = b
+		}
+	}
+	body := renderSystemWithOverride("worker", def, WorkerVars{ProxyAddr: proxyAddr, DataDir: dataDir, Now: nowStr()}, taskOverride)
 	// caCert is present only when the recording MITM is on, which is exactly when
 	// the traffic_* tools are registered — so it gates the traffic-tool note.
 	// Optional finding guidance is added for every role after tool resolution.
@@ -482,6 +498,7 @@ func firstCancel(cs []func(error)) func(error) {
 
 func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.AssetStore, ts *db.ExplorationStore, intent *db.Node, hooks harness.HookRunner, emit func(db.Activity), enr EnrichTrigger, notifyFinding func(int64, string), requestID, message string, workCancel func(error)) (harness.TerminalReason, WriteCounts, error) {
 	tsx := NewToolSet(ts, name)
+	tsx.SetReviewEnabled(w.reviewEnabledFn)
 	tsx.SetScopeFlags(w.scopeGuard, w.scopeInheritWrites, w.crossTaskNotifyDedup)
 	tsx.SetFindingRecorder(w.findingRecorder)
 	tsx.SetTaskID(taskID)
@@ -521,7 +538,7 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	// 血缘、意图 token 台账、coverage、related_tasks 等）不进 worker 视图，省掉每次
 	// 启动的重建计算与注入前缀。worker 只需要「别人发现了什么」做去重与联想。
 	overview := renderWorkerGraphOverview(tsx.workerOverviewData())
-	sysBody := workerSystem(w.proxyAddr, w.proxyCACert, w.workDir, runDir)
+	sysBody := workerSystem(w.proxyAddr, w.proxyCACert, w.workDir, runDir, w.taskPromptOverride)
 	if w.wantConstraints() {
 		sysBody += constraintBlock(ts) // 操作约束(若有)注入系统提示,worker 执行时严格遵守
 	}

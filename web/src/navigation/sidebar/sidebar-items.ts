@@ -7,6 +7,7 @@ import {
   Bug,
   ClipboardList,
   FileClock,
+  FileCode2,
   FolderOpen,
   FolderSync,
   LayoutDashboard,
@@ -92,6 +93,7 @@ export const sidebarItems: NavGroup[] = [
     items: [
       { id: "llm", title: "LLM", url: "/system/llm", icon: Brain, perm: "llm:read" },
       { id: "agents", title: "Agent", url: "/system/agents", icon: Bot, perm: "agent:read" },
+      { id: "templates", title: "提示词模板", url: "/system/templates", icon: FileCode2, perm: "task:read" },
       { id: "mcp", title: "MCP", url: "/system/mcp", icon: Plug, perm: "mcp:read" },
       { id: "skills", title: "Skill", url: "/system/skills", icon: Sparkles, perm: "skill:read" },
       { id: "tools", title: "工具", url: "/system/tools", icon: Wrench, perm: "tool:read" },

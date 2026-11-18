@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -57,6 +58,16 @@ type Task struct {
 	// 已自动延长的次数（任务复活时归零）。
 	Autopilot           bool `json:"autopilot"`
 	AutopilotExtensions int  `json:"autopilot_extensions,omitempty"`
+
+	// KAIYANG 审核 / 场景模板（§FUSION-B）
+	ReviewEnabled        bool   `json:"review_enabled"`
+	ReviewAuto           bool   `json:"review_auto"`
+	PlannerPromptOverride string `json:"planner_prompt_override,omitempty"`
+	WorkerPromptOverride  string `json:"worker_prompt_override,omitempty"`
+	WorkerCount          int    `json:"worker_count"`
+	AssetMode            string `json:"asset_mode"`
+	PreAgent             string `json:"pre_agent,omitempty"`
+	CreatedBy            string `json:"created_by,omitempty"`
 }
 
 // TaskDeleteResult reports optional related-data cleanup performed in the same
@@ -165,6 +176,15 @@ type TaskCreateOptions struct {
 	InterceptRules []TaskInterceptRuleInput
 	// AuthConfig 是任务级目标登录凭据（v0.4.8）；nil=未配置。
 	AuthConfig *TaskAuthConfig
+	// KAIYANG 审核 / 场景模板
+	ReviewEnabled         bool
+	ReviewAuto            bool
+	PlannerPromptOverride string
+	WorkerPromptOverride  string
+	WorkerCount           int
+	AssetMode             string
+	PreAgent              string
+	CreatedBy             string
 }
 
 // CreateTaskWithOptions creates an exploration, task, direct source relations,
@@ -224,6 +244,10 @@ VALUES ($1, 'fact', $2, 0, 'origin', 'system')`, expID, string(originPayload)); 
 		id := opts.LLMProfileIDs[0]
 		active = &id
 	}
+	assetMode := strings.TrimSpace(opts.AssetMode)
+	if assetMode == "" {
+		assetMode = "pentest"
+	}
 	t := &Task{
 		Name: opts.Name, CategoryID: opts.CategoryID, CategoryName: categoryName,
 		Description: description, Goal: goal, ExplorationID: expID,
@@ -233,6 +257,9 @@ VALUES ($1, 'fact', $2, 0, 'origin', 'system')`, expID, string(originPayload)); 
 		CompanyIDs:     append([]int64(nil), opts.CompanyIDs...),
 		TimeoutSeconds: opts.TimeoutSeconds, PlanHeartbeatSeconds: opts.PlanHeartbeatSeconds,
 		CoverageEnabled: coverageEnabled,
+		ReviewEnabled:   opts.ReviewEnabled, ReviewAuto: opts.ReviewAuto,
+		PlannerPromptOverride: opts.PlannerPromptOverride, WorkerPromptOverride: opts.WorkerPromptOverride,
+		WorkerCount: opts.WorkerCount, AssetMode: assetMode, PreAgent: opts.PreAgent, CreatedBy: opts.CreatedBy,
 	}
 	var authJSON any
 	if opts.AuthConfig != nil {
@@ -241,9 +268,11 @@ VALUES ($1, 'fact', $2, 0, 'origin', 'system')`, expID, string(originPayload)); 
 		}
 	}
 	if err := tx.QueryRow(`
-INSERT INTO tasks(name, category_id, description, goal, exploration_id, llm_profile_id, active_llm_profile_id, timeout_seconds, plan_heartbeat_seconds, coverage_enabled, auth_config)
-VALUES ($1,$2,$3,$4,$5,$6,$6,$7,$8,$9,$10)
-RETURNING id, status, paused, created_at`, opts.Name, opts.CategoryID, description, goal, expID, active, opts.TimeoutSeconds, opts.PlanHeartbeatSeconds, coverageEnabled, authJSON).Scan(&t.ID, &t.Status, &t.Paused, &t.CreatedAt); err != nil {
+INSERT INTO tasks(name, category_id, description, goal, exploration_id, llm_profile_id, active_llm_profile_id, timeout_seconds, plan_heartbeat_seconds, coverage_enabled, auth_config,
+  review_enabled, review_auto, planner_prompt_override, worker_prompt_override, worker_count, asset_mode, pre_agent, created_by)
+VALUES ($1,$2,$3,$4,$5,$6,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+RETURNING id, status, paused, created_at`, opts.Name, opts.CategoryID, description, goal, expID, active, opts.TimeoutSeconds, opts.PlanHeartbeatSeconds, coverageEnabled, authJSON,
+		opts.ReviewEnabled, opts.ReviewAuto, opts.PlannerPromptOverride, opts.WorkerPromptOverride, opts.WorkerCount, assetMode, opts.PreAgent, opts.CreatedBy).Scan(&t.ID, &t.Status, &t.Paused, &t.CreatedAt); err != nil {
 		return nil, err
 	}
 	if err := insertTaskRelations(tx, t.ID, opts.SourceTaskIDs); err != nil {
@@ -359,12 +388,14 @@ func insertTaskLLMProfiles(tx *sql.Tx, taskID int64, profileIDs []int64) error {
 
 const taskCols = `id, COALESCE(name,''), category_id,
 COALESCE((SELECT category.name FROM task_categories category WHERE category.id=tasks.category_id),''),
-description, goal, exploration_id, status, paused, queued, queued_at, COALESCE(queue_mode,''), llm_profile_id, active_llm_profile_id, COALESCE(parent_ref,''), pinned_at, created_at, completed_at, COALESCE(timeout_seconds,0), COALESCE(plan_heartbeat_seconds,300), COALESCE(coverage_enabled,true), first_run_at, deadline_at, COALESCE(auth_config::text,'null'), COALESCE(autopilot,false), COALESCE(autopilot_extensions,0)`
+description, goal, exploration_id, status, paused, queued, queued_at, COALESCE(queue_mode,''), llm_profile_id, active_llm_profile_id, COALESCE(parent_ref,''), pinned_at, created_at, completed_at, COALESCE(timeout_seconds,0), COALESCE(plan_heartbeat_seconds,300), COALESCE(coverage_enabled,true), first_run_at, deadline_at, COALESCE(auth_config::text,'null'), COALESCE(autopilot,false), COALESCE(autopilot_extensions,0),
+COALESCE(review_enabled,false), COALESCE(review_auto,false), COALESCE(planner_prompt_override,''), COALESCE(worker_prompt_override,''), COALESCE(worker_count,0), COALESCE(asset_mode,'pentest'), COALESCE(pre_agent,''), COALESCE(created_by,'')`
 
 func scanTask(sc interface{ Scan(...any) error }) (*Task, error) {
 	var t Task
 	var authRaw string
-	if err := sc.Scan(&t.ID, &t.Name, &t.CategoryID, &t.CategoryName, &t.Description, &t.Goal, &t.ExplorationID, &t.Status, &t.Paused, &t.Queued, &t.QueuedAt, &t.QueueMode, &t.LLMProfileID, &t.ActiveLLMProfileID, &t.ParentRef, &t.PinnedAt, &t.CreatedAt, &t.CompletedAt, &t.TimeoutSeconds, &t.PlanHeartbeatSeconds, &t.CoverageEnabled, &t.FirstRunAt, &t.DeadlineAt, &authRaw, &t.Autopilot, &t.AutopilotExtensions); err != nil {
+	if err := sc.Scan(&t.ID, &t.Name, &t.CategoryID, &t.CategoryName, &t.Description, &t.Goal, &t.ExplorationID, &t.Status, &t.Paused, &t.Queued, &t.QueuedAt, &t.QueueMode, &t.LLMProfileID, &t.ActiveLLMProfileID, &t.ParentRef, &t.PinnedAt, &t.CreatedAt, &t.CompletedAt, &t.TimeoutSeconds, &t.PlanHeartbeatSeconds, &t.CoverageEnabled, &t.FirstRunAt, &t.DeadlineAt, &authRaw, &t.Autopilot, &t.AutopilotExtensions,
+		&t.ReviewEnabled, &t.ReviewAuto, &t.PlannerPromptOverride, &t.WorkerPromptOverride, &t.WorkerCount, &t.AssetMode, &t.PreAgent, &t.CreatedBy); err != nil {
 		return nil, err
 	}
 	t.AuthConfig = ParseTaskAuth([]byte(authRaw))
@@ -682,4 +713,10 @@ DELETE FROM assets a USING deletable d WHERE a.id=d.id`, id, expID)
 		return result, err
 	}
 	return result, tx.Commit()
+}
+
+// SetTaskReviewConfig 更新任务级审核开关（只影响后续意图；存量 proposed 不自动处置）。
+func (d *DB) SetTaskReviewConfig(taskID int64, enabled, auto bool) error {
+	_, err := d.Exec(`UPDATE tasks SET review_enabled=$2, review_auto=$3, updated_at=now() WHERE id=$1`, taskID, enabled, auto)
+	return err
 }

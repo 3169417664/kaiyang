@@ -730,6 +730,23 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 		}
 	}
 	pl := agent.NewPlanner(plannerRuntime, "task-router", s.m.dir, tx, plannerRuntime.CompactionWindow(), s.agentMaxTurns("planner"))
+	// 任务级提示词快照（模板库/建任务时解析）：最高优先级，只替换正文，硬尾仍由代码追加。
+	if s.m.PG() != nil {
+		if id64, err := strconv.ParseInt(t.ID, 10, 64); err == nil {
+			if pgTask, err2 := s.m.PG().GetTask(id64); err2 == nil && pgTask != nil {
+				wk.SetTaskPromptOverride(pgTask.WorkerPromptOverride)
+				pl.SetTaskPromptOverride(pgTask.PlannerPromptOverride)
+				reviewFn := func() bool {
+					if pt, e := s.m.PG().GetTask(id64); e == nil && pt != nil {
+						return pt.ReviewEnabled
+					}
+					return false
+				}
+				wk.SetReviewEnabled(reviewFn)
+				pl.SetReviewEnabled(reviewFn)
+			}
+		}
+	}
 	pl.SetScopeFlags(scopeGuard, scopeInherit, notifyDedup)
 	pl.SetIntentQueueLimit(s.intentQueueBudget) // 派发节流（v0.4.68）：本轮新增上限
 	pl.SetFindingRecorder(s.evidenceStore())

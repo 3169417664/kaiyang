@@ -1668,3 +1668,69 @@ CREATE INDEX IF NOT EXISTS idx_audit_logs_category ON audit_logs(category, id DE
 
 -- 任务创建者只用于审计归因，不做可见性隔离。
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS created_by TEXT NOT NULL DEFAULT '';
+
+-- ── §FUSION-B  审核状态机 / 场景模板 ───────────────────────────────────
+-- 意图新增 proposed 待审态；只在 intent 分支增加，其余 kind 约束保持不变。
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid='exploration_nodes'::regclass
+          AND conname='ck_node_state'
+          AND pg_get_constraintdef(oid) NOT LIKE '%proposed%'
+    ) THEN
+        ALTER TABLE exploration_nodes DROP CONSTRAINT ck_node_state;
+        ALTER TABLE exploration_nodes ADD CONSTRAINT ck_node_state CHECK (
+            (kind='begin'   AND state IN ('open')) OR
+            (kind='intent'  AND state IN ('open','proposed','running','paused','done','blocked','exhausted','stopped','deleted')) OR
+            (kind='goal'    AND state IN ('open','met','abandoned')) OR
+            (kind='fact'    AND state IN ('confirmed','dismissed','origin')) OR
+            (kind='finding' AND state IN ('confirmed','dismissed')) OR
+            (kind='hint'    AND state IN ('active','consumed')) OR
+            (kind='digest'  AND state IN ('active','superseded'))
+        );
+    END IF;
+END $$;
+
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS review_enabled BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS review_auto BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS planner_prompt_override TEXT NOT NULL DEFAULT '';
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS worker_prompt_override TEXT NOT NULL DEFAULT '';
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS worker_count INT NOT NULL DEFAULT 0;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS asset_mode TEXT NOT NULL DEFAULT 'pentest';
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS pre_agent TEXT NOT NULL DEFAULT '';
+
+ALTER TABLE task_categories ADD COLUMN IF NOT EXISTS default_review_enabled BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE task_categories ADD COLUMN IF NOT EXISTS default_planner_template_id BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE task_categories ADD COLUMN IF NOT EXISTS default_worker_template_id BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE task_categories ADD COLUMN IF NOT EXISTS default_description TEXT NOT NULL DEFAULT '';
+ALTER TABLE task_categories ADD COLUMN IF NOT EXISTS asset_mode TEXT NOT NULL DEFAULT 'pentest';
+ALTER TABLE task_categories ADD COLUMN IF NOT EXISTS seed_first_intent BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE task_categories ADD COLUMN IF NOT EXISTS seed_executor TEXT NOT NULL DEFAULT '';
+
+CREATE TABLE IF NOT EXISTS planner_templates (
+    id         BIGSERIAL PRIMARY KEY,
+    name       TEXT NOT NULL,
+    nkey       TEXT NOT NULL UNIQUE,
+    body       TEXT NOT NULL,
+    builtin    BOOLEAN NOT NULL DEFAULT false,
+    is_default BOOLEAN NOT NULL DEFAULT false,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_planner_templates_default ON planner_templates(is_default) WHERE is_default;
+
+CREATE TABLE IF NOT EXISTS worker_templates (
+    id         BIGSERIAL PRIMARY KEY,
+    name       TEXT NOT NULL,
+    nkey       TEXT NOT NULL UNIQUE,
+    body       TEXT NOT NULL,
+    builtin    BOOLEAN NOT NULL DEFAULT false,
+    is_default BOOLEAN NOT NULL DEFAULT false,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_worker_templates_default ON worker_templates(is_default) WHERE is_default;
+
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS executor_key TEXT;
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS planner_controlled BOOLEAN NOT NULL DEFAULT true;
