@@ -26,15 +26,25 @@ git push -u origin develop
 protect() {
   local branch="$1"
   echo "配置 $branch 分支保护"
-  gh api -X PUT "repos/$FULL/branches/$branch/protection" \
-    -H "Accept: application/vnd.github+json" \
-    -f required_status_checks='{"strict":true,"contexts":["backend","frontend","gitleaks"]}' \
-    -f enforce_admins=true \
-    -f required_pull_request_reviews='{"dismiss_stale_reviews":true,"require_code_owner_reviews":true,"required_approving_review_count":1}' \
-    -f restrictions=null \
-    -f required_linear_history=true \
-    -f allow_force_pushes=false \
-    -f allow_deletions=false >/dev/null
+  local payload
+  payload=$(cat <<JSON
+{
+  "required_status_checks": {"strict": true, "contexts": ["backend", "frontend", "gitleaks"]},
+  "enforce_admins": true,
+  "required_pull_request_reviews": {
+    "dismiss_stale_reviews": true,
+    "require_code_owner_reviews": true,
+    "required_approving_review_count": 1
+  },
+  "restrictions": null,
+  "required_linear_history": true,
+  "allow_force_pushes": false,
+  "allow_deletions": false
+}
+JSON
+)
+  printf '%s' "$payload" | gh api -X PUT "repos/$FULL/branches/$branch/protection" \
+    -H "Accept: application/vnd.github+json" --input - >/dev/null
 }
 
 protect main
