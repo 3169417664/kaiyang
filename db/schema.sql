@@ -1755,3 +1755,67 @@ CREATE TABLE IF NOT EXISTS task_dispatch_targets (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_task_dispatch_targets_task ON task_dispatch_targets(task_id);
+
+-- ── §FUSION-C  报告 / 漏洞富化 / 复现 ───────────────────────────────────
+ALTER TABLE findings ADD COLUMN IF NOT EXISTS reproduction JSONB NOT NULL DEFAULT '{}'::jsonb;
+
+CREATE TABLE IF NOT EXISTS finding_enrichment (
+    finding_id    BIGINT PRIMARY KEY REFERENCES findings(id) ON DELETE CASCADE,
+    node_id       BIGINT,
+    name          TEXT NOT NULL DEFAULT '',
+    target        TEXT NOT NULL DEFAULT '',
+    module        TEXT NOT NULL DEFAULT '',
+    severity      TEXT NOT NULL DEFAULT '',
+    status        TEXT NOT NULL DEFAULT 'open',
+    cvss_score    DOUBLE PRECISION NOT NULL DEFAULT 0,
+    cvss_vector   TEXT NOT NULL DEFAULT '',
+    cvss_metrics  JSONB NOT NULL DEFAULT '{}'::jsonb,
+    description   JSONB NOT NULL DEFAULT '[]'::jsonb,
+    test_process  JSONB NOT NULL DEFAULT '[]'::jsonb,
+    risk_analysis JSONB NOT NULL DEFAULT '[]'::jsonb,
+    remediation   JSONB NOT NULL DEFAULT '[]'::jsonb,
+    source        TEXT NOT NULL DEFAULT 'manual',
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_finding_enrichment_status ON finding_enrichment(status);
+
+CREATE TABLE IF NOT EXISTS report_settings (
+    id              INT PRIMARY KEY DEFAULT 1,
+    company_name    TEXT NOT NULL DEFAULT '',
+    company_name_en TEXT NOT NULL DEFAULT '',
+    logo_path       TEXT NOT NULL DEFAULT '',
+    personnel_json  JSONB NOT NULL DEFAULT '[]'::jsonb,
+    cvss_version    TEXT NOT NULL DEFAULT '3.1',
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT report_settings_singleton CHECK (id = 1)
+);
+
+CREATE TABLE IF NOT EXISTS reports (
+    id         BIGSERIAL PRIMARY KEY,
+    task_id    BIGINT,
+    task_desc  TEXT NOT NULL DEFAULT '',
+    filename   TEXT NOT NULL DEFAULT '',
+    path       TEXT NOT NULL DEFAULT '',
+    size       BIGINT NOT NULL DEFAULT 0,
+    company    TEXT NOT NULL DEFAULT '',
+    status     TEXT NOT NULL DEFAULT 'queued',
+    error      TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    started_at TIMESTAMPTZ,
+    finished_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_reports_created ON reports(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS report_templates (
+    id              BIGSERIAL PRIMARY KEY,
+    name            TEXT NOT NULL DEFAULT '',
+    company_name    TEXT NOT NULL DEFAULT '',
+    company_name_en TEXT NOT NULL DEFAULT '',
+    logo_path       TEXT NOT NULL DEFAULT '',
+    personnel_json  JSONB NOT NULL DEFAULT '[]'::jsonb,
+    cvss_version    TEXT NOT NULL DEFAULT '3.1',
+    locale          TEXT NOT NULL DEFAULT 'zh-CN',
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);

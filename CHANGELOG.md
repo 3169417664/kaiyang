@@ -4,6 +4,17 @@
 
 ## [Unreleased]
 
+### 新增（KAIYANG Phase 5：报告交付）
+
+- **中文 docx 交付报告**：封面、目录、概述、漏洞明细、复现步骤、证据截图、流量证据、修复建议；
+  使用 Pojun 手写 OOXML，不引入 python-docx。
+- **报告管理**：`report_settings` 组织设置、`reports` 记录、异步生成/状态/下载/删除；
+  文件落 `keyDir/report_assets/reports`，不在可浏览工作区。
+- **漏洞富化**：`finding_enrichment(finding_id)`，名称/目标/CVSS/描述/复现/风险/修复；
+  新增 `GET/PUT /api/findings/{id}/enrichment`。
+- **结构化复现**：`findings.reproduction` + `PUT /api/findings/{id}/reproduction`。
+- **前端**：`/system/reports` 报告管理页；任务详情「报告」Tab 新增「生成交付报告」按钮。
+
 ### 新增（KAIYANG Phase 4：自定义执行器 + Finding 编排）
 
 - **自定义执行器**：`agents.executor_key` / `planner_controlled`；`tasks.pre_agent` 种子意图

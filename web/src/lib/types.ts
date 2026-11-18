@@ -2029,3 +2029,43 @@ export interface AuditLog {
   message: string;
   detail: Record<string, unknown>;
 }
+
+// ---- 交付报告 / 漏洞富化（KAIYANG Phase 5）----
+export interface ReportSettings {
+  company_name: string;
+  company_name_en: string;
+  logo_path: string;
+  personnel: Array<{ name: string; role: string; contact?: string }>;
+  cvss_version: string;
+}
+
+export interface ReportRecord {
+  id: number;
+  task_id?: number;
+  task_desc: string;
+  filename: string;
+  size: number;
+  company: string;
+  status: "queued" | "running" | "done" | "failed" | string;
+  error?: string;
+  created_at: string;
+}
+
+export interface FindingEnrichment {
+  finding_id: number;
+  node_id?: number;
+  name: string;
+  target: string;
+  module: string;
+  severity: string;
+  status: string;
+  cvss_score: number;
+  cvss_vector: string;
+  cvss_metrics: Record<string, unknown>;
+  description: string[];
+  test_process: Array<Record<string, unknown>>;
+  risk_analysis: string[];
+  remediation: string[];
+  source: string;
+  updated_at?: string;
+}
