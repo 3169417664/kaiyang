@@ -378,6 +378,9 @@ func (s *Server) pgSaveAgentConfig(w http.ResponseWriter, r *http.Request) {
 		TriggerRunMode     *string `json:"trigger_run_mode"`
 		TriggerMergeMode   *string `json:"trigger_merge_mode"`
 		TriggerMaxParallel *int    `json:"trigger_max_parallel"`
+		// KAIYANG：自定义执行器声明。
+		ExecutorKey       *string `json:"executor_key"`
+		PlannerControlled *bool   `json:"planner_controlled"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, 400, err.Error())
@@ -436,6 +439,32 @@ func (s *Server) pgSaveAgentConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.LocalExec != nil {
 		if err := pg.SetAgentLocalExec(a.Key, *req.LocalExec); err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+	}
+	if req.ExecutorKey != nil || req.PlannerControlled != nil {
+		execKey := a.ExecutorKey
+		pc := a.PlannerControlled
+		if req.ExecutorKey != nil {
+			execKey = strings.TrimSpace(*req.ExecutorKey)
+		}
+		if req.PlannerControlled != nil {
+			pc = *req.PlannerControlled
+		}
+		if a.Builtin && execKey != "" {
+			writeErr(w, 400, "内置 Agent 不能声明 executor_key")
+			return
+		}
+		if execKey != "" {
+			for _, r := range execKey {
+				if !(r == '_' || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')) {
+					writeErr(w, 400, "executor_key 只能包含小写字母、数字、下划线")
+					return
+				}
+			}
+		}
+		if err := pg.SetAgentExecutor(a.Key, execKey, pc); err != nil {
 			writeErr(w, 500, err.Error())
 			return
 		}

@@ -108,6 +108,9 @@ type Engine struct {
 	m        *Manager
 	debounce time.Duration
 
+	// customExecutor 由 Server 注入：执行一条已领取的自定义执行器意图。
+	customExecutor func(ctx context.Context, t *Task, intent *db.Node) error
+
 	bc *Broadcaster // live activity pub/sub (SSE)
 
 	started  sync.Map // taskID -> bool, so Run is idempotent per task
@@ -902,6 +905,11 @@ func (e *Engine) ReadyFor(t *Task) bool {
 // Run starts the planner loop + N worker loops for a task. The loops always run
 // but no-op until an LLM is configured (so a task created while idle picks up
 // automatically once LLM is set from the UI).
+// SetCustomExecutor 注入自定义执行器实现（Server 侧解析 Agent/Provider）。
+func (e *Engine) SetCustomExecutor(fn func(ctx context.Context, t *Task, intent *db.Node) error) {
+	e.customExecutor = fn
+}
+
 func (e *Engine) Run(ctx context.Context, t *Task) {
 	workers := e.m.Workers()
 	if t.WorkerCount > 0 {
@@ -917,7 +925,11 @@ func (e *Engine) Run(ctx context.Context, t *Task) {
 		t.Notify() // already running — just nudge a planning round
 		return
 	}
-	rt := e.registerTaskRoutines(ctx, t.ID, 1+workers)
+	routines := 1 + workers
+	if strings.TrimSpace(t.PreAgent) != "" && e.customExecutor != nil {
+		routines++
+	}
+	rt := e.registerTaskRoutines(ctx, t.ID, routines)
 	e.deleteMu.RUnlock()
 	// created→running：任务真正开跑后状态列必须与事实一致（此前 bootstrap 准入不写
 	// running，线上任务跑了数小时 DB 里仍是 created）。仅 created 时写，避免覆盖
@@ -941,6 +953,9 @@ func (e *Engine) Run(ctx context.Context, t *Task) {
 	for i := 0; i < workers; i++ {
 		name := fmt.Sprintf("work#%d", i+1)
 		runTaskRoutine(rt, func(loopCtx context.Context) { e.workerLoop(loopCtx, t, name) })
+	}
+	if strings.TrimSpace(t.PreAgent) != "" && e.customExecutor != nil {
+		runTaskRoutine(rt, func(loopCtx context.Context) { e.runPreAgentStage(loopCtx, t) })
 	}
 	e.startDeadlineCoordinator(ctx, t) // 任务级超时定时器(仅 timeout>0;去重)
 	// 仅在「完全没有活动意图(open+running)」时才 kick 首轮规划。带种子意图的任务:种子已
@@ -1162,6 +1177,12 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 		// 批准/驳回后会 Notify 唤醒本循环继续。
 		if has, _ := t.Store.HasProposedIntent(); has {
 			return
+		}
+		// pre_agent 阶段：执行器还在跑时 planner 不抢跑；执行结束后 Notify 唤醒。
+		if key := strings.TrimSpace(t.PreAgent); key != "" {
+			if active, _ := t.Store.HasCustomExecutorIntentActive(key); active {
+				return
+			}
 		}
 		// terminal task (goals all met → done, or failed): the run is over. A
 		// resume/nudge — e.g. auto-resume of the active task on restart — must NOT
@@ -1867,4 +1888,38 @@ func (e *Engine) intentRequiresPending(t *Task, in *db.Node) bool {
 		}
 	}
 	return false
+}
+
+// runPreAgentStage 在普通 planner/worker 之外执行 pre_agent 种子意图：
+// 只领取 payload.executor == t.PreAgent 的 open/proposed 意图，执行完一批后退出。
+// 默认 worker 的 Frontier 已排除带 executor 的意图，因此不会与这里抢单。
+func (e *Engine) runPreAgentStage(ctx context.Context, t *Task) {
+	key := strings.TrimSpace(t.PreAgent)
+	if key == "" || e.customExecutor == nil {
+		return
+	}
+	ns, err := t.Store.DispatchFrontier(20, key)
+	if err != nil {
+		log.Printf("[executor] task %s 读取 pre_agent 意图失败: %v", t.ID, err)
+		return
+	}
+	if len(ns) == 0 {
+		return
+	}
+	for _, n := range ns {
+		if ctx.Err() != nil {
+			return
+		}
+		ok, err := t.Store.ClaimExecutorIntent(n.ID, key, "exec:"+key)
+		if err != nil || !ok {
+			continue
+		}
+		n.State = "running"
+		log.Printf("[executor] task %s 意图 #%d 交给 pre_agent=%s", t.ID, n.ID, key)
+		if err := e.customExecutor(ctx, t, n); err != nil {
+			log.Printf("[executor] task %s 意图 #%d 执行失败: %v", t.ID, n.ID, err)
+		}
+	}
+	// 让 planner 看到执行结果并继续。
+	t.Notify()
 }

@@ -98,6 +98,8 @@ type ToolSet struct {
 	runDir string
 	// reviewEnabledFn 返回当前任务是否开启意图审核；add_intent 在开启时硬拒绝。
 	reviewEnabledFn func() bool
+	// executorKey 非空时当前 ToolSet 属于自定义执行器，可领取匹配意图。
+	executorKey string
 	as              *db.AssetStore   // asset store (optional; nil = asset tools not available)
 	cs     *db.CompanyStore // company store (optional)
 	ts     *db.ExplorationStore
@@ -237,6 +239,9 @@ func (t *ToolSet) SetTaskID(id int64) { t.taskID = id }
 
 // SetReviewEnabled 注入当前任务是否开启意图审核（每轮读取，设置改动即时生效）。
 func (t *ToolSet) SetReviewEnabled(fn func() bool) { t.reviewEnabledFn = fn }
+
+// SetExecutorKey 标记当前 ToolSet 所属的自定义执行器。
+func (t *ToolSet) SetExecutorKey(key string) { t.executorKey = key }
 
 
 // SetArtifactRecorder 注入证据附件存储（host 实现）。

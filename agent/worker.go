@@ -99,6 +99,8 @@ type Worker struct {
 	taskPromptOverride string
 	// reviewEnabledFn 返回任务是否开启意图审核（每轮读取）。
 	reviewEnabledFn func() bool
+	// agentKey 用于提示词覆盖链与技能/MCP 装配；默认 worker，自定义执行器改为其 key。
+	agentKey string
 }
 
 // WorkerSessionID returns the stable transcript key used by a worker intent.
@@ -180,7 +182,14 @@ func (w *Worker) SetArtifactRecorder(r ArtifactRecorder) { w.artifactRecorder = 
 const settleWrapUpPrompt = "你即将因预算耗尽被终止。不要再运行任何命令/探测。请依次：(1) 把你上面已识别但还没写回的内容逐条写回——新资产用 insert_assets、探索结论/事实用 record_fact、确认漏洞用 report_finding。**只写回已确认的；未验证的猜测一律不写**（收尾时刻赶进度最易污染图谱，planner 会把 inferred 当态势）；(2) **最后单独用一句话纯文本**总结你做了什么、得到哪些关键结论（这句会作为本次运行的结果展示，务必输出）。"
 
 func NewWorker(prov llm.Provider, model, workDir string, tx *transcript.Store, window, maxTurns int, extra ...actool.CoreTool) *Worker {
-	return &Worker{prov: prov, model: model, workDir: workDir, tx: tx, window: window, maxTurns: maxTurns, extraTools: extra}
+	return &Worker{prov: prov, model: model, workDir: workDir, tx: tx, window: window, maxTurns: maxTurns, extraTools: extra, agentKey: "worker"}
+}
+
+// SetAgentKey 切换提示词/技能/MCP 装配使用的 agent key（自定义执行器用）。
+func (w *Worker) SetAgentKey(key string) {
+	if key = strings.TrimSpace(key); key != "" {
+		w.agentKey = key
+	}
 }
 
 // defaultToolsExcept returns actool.DefaultTools() minus the named tools (by
@@ -333,20 +342,23 @@ func ensureRunDir(base string, taskID, intentID int64) string {
 // cmdOutDir is the SDK large-tool-output spill dir under an agent's run dir.
 func cmdOutDir(dir string) string { return filepath.Join(dir, "cmd-output") }
 
-func workerSystem(proxyAddr, caCert, dataDir, runDir, taskOverride string) string {
+func workerSystem(agentKey, proxyAddr, caCert, dataDir, runDir, taskOverride string) string {
+	if strings.TrimSpace(agentKey) == "" {
+		agentKey = "worker"
+	}
 	def := workerDefaultTmpl
 	if WorkerTemplateDefault != nil {
 		if b := WorkerTemplateDefault(); strings.TrimSpace(b) != "" {
 			def = b
 		}
 	}
-	body := renderSystemWithOverride("worker", def, WorkerVars{ProxyAddr: proxyAddr, DataDir: dataDir, Now: nowStr()}, taskOverride)
+	body := renderSystemWithOverride(agentKey, def, WorkerVars{ProxyAddr: proxyAddr, DataDir: dataDir, Now: nowStr()}, taskOverride)
 	// caCert is present only when the recording MITM is on, which is exactly when
 	// the traffic_* tools are registered — so it gates the traffic-tool note.
 	// Optional finding guidance is added for every role after tool resolution.
 	// 作业硬尾巴（v0.4.63）：扫描器优先 + 技能路由，代码注入不可经 UI 改掉。
 	out := body + workerTrafficBlock(caCert != "") + workerArtifactSpec(runDir) + scannerFirstGuidance + skillRoutingGuidance + execFaceWorkerGuidance +
-		engagementFraming + impactVerificationGuidance
+		engagementFraming + impactVerificationGuidance + footholdFactGuidance
 	// 宿主工具清单：真正动手的是 worker，所以清单必须进 worker 的 system prompt。
 	// 之前只有 planner 的唤醒提示里有（用于「派意图选手段」），worker 看不到——
 	// 于是新装的一批工具（dalfox/feroxbuster/chisel…）一次都没被用起来。
@@ -499,6 +511,9 @@ func firstCancel(cs []func(error)) func(error) {
 func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.AssetStore, ts *db.ExplorationStore, intent *db.Node, hooks harness.HookRunner, emit func(db.Activity), enr EnrichTrigger, notifyFinding func(int64, string), requestID, message string, workCancel func(error)) (harness.TerminalReason, WriteCounts, error) {
 	tsx := NewToolSet(ts, name)
 	tsx.SetReviewEnabled(w.reviewEnabledFn)
+	if w.agentKey != "" && w.agentKey != "worker" {
+		tsx.SetExecutorKey(w.agentKey)
+	}
 	tsx.SetScopeFlags(w.scopeGuard, w.scopeInheritWrites, w.crossTaskNotifyDedup)
 	tsx.SetFindingRecorder(w.findingRecorder)
 	tsx.SetTaskID(taskID)
@@ -513,12 +528,17 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	// base = built-in worker tools ∪ host tools (traffic) ∪ default tools (incl. Bash);
 	// then augment with the agent's visible skills/MCP. During the SDK settlement
 	// phase, Bash is hidden via Settlement.DisabledTools (no local gating needed).
-	base := append(tsx.WorkerTools(), w.extraTools...)
+	var base []actool.CoreTool
+	if w.agentKey != "" && w.agentKey != "worker" {
+		base = append(tsx.CustomExecutorTools(), w.extraTools...)
+	} else {
+		base = append(tsx.WorkerTools(), w.extraTools...)
+	}
 	// worker 刻意不给 MultiEdit/Glob/Grep：文件精改用 Edit、检索走 Bash(grep/find)，
 	// 收敛工具面、减少低价值调用。其余 SDK 默认工具(Read/Write/Edit/LS/Bash/Sleep)照常。
 	base = append(base, defaultToolsExcept("MultiEdit", "Glob", "Grep")...)
 	ctx = WithRunInfo(ctx, RunInfo{TaskID: taskID, ExplorationID: explorationID(ts), IntentID: intent.ID, Kind: KindWorker})
-	tools, def, cleanup := AugmentTools(ctx, "worker", base)
+	tools, def, cleanup := AugmentTools(ctx, w.agentKey, base)
 	defer cleanup()
 
 	// 意图是 worker 的【唯一职责、贯穿整个 run 的不变量】→ 连同启动指令、意图锚定的目标资产
@@ -538,7 +558,7 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	// 血缘、意图 token 台账、coverage、related_tasks 等）不进 worker 视图，省掉每次
 	// 启动的重建计算与注入前缀。worker 只需要「别人发现了什么」做去重与联想。
 	overview := renderWorkerGraphOverview(tsx.workerOverviewData())
-	sysBody := workerSystem(w.proxyAddr, w.proxyCACert, w.workDir, runDir, w.taskPromptOverride)
+	sysBody := workerSystem(w.agentKey, w.proxyAddr, w.proxyCACert, w.workDir, runDir, w.taskPromptOverride)
 	if w.wantConstraints() {
 		sysBody += constraintBlock(ts) // 操作约束(若有)注入系统提示,worker 执行时严格遵守
 	}

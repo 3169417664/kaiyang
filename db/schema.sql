@@ -1734,3 +1734,24 @@ CREATE INDEX IF NOT EXISTS idx_worker_templates_default ON worker_templates(is_d
 
 ALTER TABLE agents ADD COLUMN IF NOT EXISTS executor_key TEXT;
 ALTER TABLE agents ADD COLUMN IF NOT EXISTS planner_controlled BOOLEAN NOT NULL DEFAULT true;
+
+-- ── §FUSION-F  Finding 派发 / 内网子任务去重 ─────────────────────────────
+CREATE TABLE IF NOT EXISTS finding_agent_invocations (
+    agent_key       TEXT NOT NULL,
+    finding_id      BIGINT NOT NULL REFERENCES findings(id) ON DELETE CASCADE,
+    task_id         BIGINT NOT NULL,
+    reason          TEXT NOT NULL DEFAULT '',
+    conversation_id BIGINT,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (agent_key, finding_id)
+);
+CREATE INDEX IF NOT EXISTS idx_finding_invocations_pending
+    ON finding_agent_invocations(created_at) WHERE conversation_id IS NULL;
+
+CREATE TABLE IF NOT EXISTS task_dispatch_targets (
+    asset_key  TEXT PRIMARY KEY,
+    task_id    BIGINT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    finding_id BIGINT NOT NULL REFERENCES findings(id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_task_dispatch_targets_task ON task_dispatch_targets(task_id);

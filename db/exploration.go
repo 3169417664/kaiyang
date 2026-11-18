@@ -1419,6 +1419,7 @@ func (s *ExplorationStore) Frontier(limit int) ([]*Node, error) {
 	}
 	rows, err := s.db.Query(`SELECT `+nodeCols+` FROM exploration_nodes
 WHERE exploration_id=$1 AND kind='intent' AND state='open'
+  AND COALESCE(payload->>'executor','')=''
 ORDER BY priority DESC, id ASC LIMIT $2`, s.expID, limit)
 	if err != nil {
 		return nil, err
