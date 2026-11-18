@@ -143,6 +143,18 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto;
 INSERT INTO settings(key, value)
 VALUES ('$PASS_KEY', crypt(:'newpw', gen_salt('bf', $BCRYPT_COST)))
 ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now();
+-- KAIYANG：多用户 RBAC 的 admin 密码才是登录校验源；旧 settings 键只作回滚镜像。
+DO \$\$
+BEGIN
+  IF to_regclass('public.rbac_users') IS NOT NULL THEN
+    UPDATE rbac_users
+       SET password_hash = crypt(:'newpw', gen_salt('bf', $BCRYPT_COST)),
+           token_version = token_version + 1,
+           must_change_password = false,
+           updated_at = now()
+     WHERE id = 'admin' OR username = 'admin';
+  END IF;
+END \$\$;
 SQL
 )
 
