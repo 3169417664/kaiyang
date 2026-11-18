@@ -1590,3 +1590,18 @@ CREATE TABLE IF NOT EXISTS finding_updates (
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_finding_updates_finding ON finding_updates(finding_id, id DESC);
+
+-- =====================================================================
+-- §FUSION  KAIYANG 缝合区（只追加，不要重排既有 DDL）
+-- =====================================================================
+-- 约定：
+--   1. 所有新增表/列/索引追加在本段之后；PR 只改自己的子段。
+--   2. CHECK 约束变更必须用 DO 块探测旧定义后重建。
+--   3. 一次性数据迁移放 db/migrate_fusion.go，用 settings flag 幂等门控。
+--
+-- 规划中的子段：
+--   §FUSION-A  RBAC / audit_logs
+--   §FUSION-B  审核状态机 / planner_templates / worker_templates
+--   §FUSION-C  报告 / finding_enrichment / reproduction
+--   §FUSION-D  知识库
+--   §FUSION-E  资产凭据 / 内网拓扑
