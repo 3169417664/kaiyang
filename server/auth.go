@@ -340,8 +340,7 @@ func (s *Server) authInit(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Password string `json:"password"`
 	}
-	if err := decode(r, &req); err != nil {
-		writeErr(w, 400, "请求格式错误")
+	if !decodeJSON(w, r, &req, maxAuthJSONBodyBytes) {
 		return
 	}
 	if msg := validatePassword(req.Password); msg != "" {
@@ -392,8 +391,7 @@ func (s *Server) authChangePassword(w http.ResponseWriter, r *http.Request) {
 		OldPassword string `json:"old_password"`
 		NewPassword string `json:"new_password"`
 	}
-	if err := decode(r, &req); err != nil {
-		writeErr(w, 400, "请求格式错误")
+	if !decodeJSON(w, r, &req, maxAuthJSONBodyBytes) {
 		return
 	}
 	if msg := validatePassword(req.NewPassword); msg != "" {
@@ -433,8 +431,7 @@ func (s *Server) authLogin(w http.ResponseWriter, r *http.Request) {
 		Username string `json:"username"`
 		Password string `json:"password"`
 	}
-	if err := decode(r, &req); err != nil {
-		writeErr(w, 400, "请求格式错误")
+	if !decodeJSON(w, r, &req, maxAuthJSONBodyBytes) {
 		return
 	}
 	ip := clientIP(r)

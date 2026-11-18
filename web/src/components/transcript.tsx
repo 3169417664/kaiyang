@@ -32,12 +32,24 @@ const workerColors = [
   "bg-pink-600",
   "bg-orange-600",
 ];
-function workerColor(name: string): string {
+export function workerColor(name: string): string {
   if (name === "planner") return "bg-amber-600"; // the intent generator, distinct
-  if (name === "mainagent") return "bg-primary";
+  if (name === "mainagent" || name === "main") return "bg-primary";
+  if (name.startsWith("exec:")) return "bg-fuchsia-600";
   const m = /#(\d+)/.exec(name);
   const i = m ? (parseInt(m[1], 10) - 1) % workerColors.length : 0;
   return workerColors[Math.max(0, i)];
+}
+
+// workerLabel 把内部执行者 key 转成时间线 chip 上的短名。
+export function workerLabel(name: string): string {
+  if (name === "planner") return "规划";
+  if (name === "mainagent" || name === "main") return "主";
+  if (name === "review") return "审核";
+  if (name.startsWith("exec:")) return name.slice(5);
+  const m = /^work#(\d+)$/.exec(name);
+  if (m) return `执行${m[1]}`;
+  return name;
 }
 
 const chip = (worker: string) =>
@@ -84,6 +96,10 @@ type Group =
   | { type: "msg"; key: number; worker: string; steps: Activity[] }
   | { type: "intercept"; key: number; step: Activity };
 
+// toolKey 把 tool_use_id 限定在 worker 作用域内：合并多 agent 时间线时，
+// 不同 worker 的 tool_use_id 可能重复，只用 id 会把结果配到别人家。
+const toolKey = (worker: string, id: string) => `${worker}\n${id}`;
+
 function groupSteps(steps: Activity[], chat: boolean): Group[] {
   const out: Group[] = [];
   const byToolId = new Map<string, Extract<Group, { type: "tool" }>>();
@@ -111,13 +127,13 @@ function groupSteps(steps: Activity[], chat: boolean): Group[] {
     }
     if (s.kind === "tool_use") {
       const g: Extract<Group, { type: "tool" }> = { type: "tool", key: s.seq, worker: s.worker, use: s };
-      if (s.tool_use_id) byToolId.set(s.tool_use_id, g);
+      if (s.tool_use_id) byToolId.set(toolKey(s.worker, s.tool_use_id), g);
       out.push(g);
       continue;
     }
     if (s.kind === "tool_result") {
-      // bind to its tool_use by id (NOT adjacency — tools can run in parallel)
-      const g = s.tool_use_id ? byToolId.get(s.tool_use_id) : undefined;
+      // bind to its tool_use by worker+id (NOT adjacency — tools can run in parallel)
+      const g = s.tool_use_id ? byToolId.get(toolKey(s.worker, s.tool_use_id)) : undefined;
       if (g && !g.result) g.result = s;
       else out.push({ type: "tool", key: s.seq, worker: s.worker, result: s }); // orphan result
       continue;
@@ -687,14 +703,16 @@ function ExecView({
   chat,
   fetchDetail,
   focusedSeq,
+  showWorkers,
 }: {
   activity: Activity[];
   taskId?: string;
   chat?: boolean;
   fetchDetail?: (seq: number) => Promise<string>;
   focusedSeq?: number;
+  showWorkers?: boolean;
 }) {
-  const showWorker = new Set(activity.map((a) => a.worker)).size > 1;
+  const showWorker = showWorkers || new Set(activity.map((a) => a.worker)).size > 1;
   // default detail fetcher: the task-scoped activity endpoint. The chat page passes
   // its own (conversation-scoped) fetcher instead.
   const getDetail = React.useCallback(
@@ -742,6 +760,7 @@ export function Transcript({
   chat,
   fetchDetail,
   focusedSeq,
+  showWorkers,
 }: {
   activity: Activity[];
   live?: boolean;
@@ -749,6 +768,7 @@ export function Transcript({
   chat?: boolean;
   fetchDetail?: (seq: number) => Promise<string>;
   focusedSeq?: number;
+  showWorkers?: boolean;
 }) {
   const transcriptRef = React.useRef<HTMLDivElement>(null);
   const [focusPadding, setFocusPadding] = React.useState(0);
@@ -766,7 +786,7 @@ export function Transcript({
   }, [focusedSeq]);
   return (
     <div ref={transcriptRef} className="flex flex-col gap-1" style={focusPadding ? { paddingBlock: focusPadding } : undefined}>
-      <ExecView activity={activity} taskId={taskId} chat={chat} fetchDetail={fetchDetail} focusedSeq={focusedSeq} />
+      <ExecView activity={activity} taskId={taskId} chat={chat} fetchDetail={fetchDetail} focusedSeq={focusedSeq} showWorkers={showWorkers} />
       {live && (
         <div className="flex items-center gap-2 pt-1 pl-2 text-muted-foreground text-xs">
           <span className="flex gap-1">

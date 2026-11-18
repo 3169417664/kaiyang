@@ -1040,7 +1040,7 @@ func (s *Server) Handler() http.Handler {
 	// /api/* goes through CORS + JWT; everything else is served by the embedded
 	// frontend (public — auth is enforced client-side and on the API). With the
 	// no-embed build the webui handler just 404s (run `next dev` separately).
-	api := securityHeaders(s.requireAuth(mux))
+	api := accessLog(securityHeaders(s.requireAuth(mux)))
 	root := http.NewServeMux()
 	root.Handle("/api/", api)
 	root.Handle("/", s.webuiHandler())
@@ -2963,6 +2963,9 @@ func (s *Server) activity(w http.ResponseWriter, r *http.Request) {
 // single Plan session); a Worker session is one intent, keyed by its node id.
 func parseActivitySession(sess string) (db.ActivitySessionFilter, bool) {
 	switch {
+	case sess == "all":
+		// 零值过滤 = 整个任务全部 lane（主/规划/各 worker），供轨迹合并视图使用。
+		return db.ActivitySessionFilter{}, true
 	case sess == "" || sess == "main":
 		// bare "main" = the current segment; caller resolves MainSeg via the store.
 		return db.ActivitySessionFilter{Main: true}, true
