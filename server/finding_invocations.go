@@ -75,14 +75,34 @@ func (s *Server) toolDispatchFindingToAgent() actool.CoreTool {
 			if err := s.m.pg.SetFindingInvocationConversation(a.AgentKey, a.FindingID, conv.ID); err != nil {
 				log.Printf("[finding-dispatch] set conversation: %v", err)
 			}
-			msg := buildFindingDispatchMessage(t, f, a.Reason)
+			msg := s.buildFindingDispatchMessage(t, f, a.AgentKey, a.Reason)
 			go s.runFindingInvocation(conv, msg)
 			return jsonResult(map[string]any{"ok": true, "enqueued": true, "conversation_id": conv.ID})
 		})
 }
 
-func buildFindingDispatchMessage(t *Task, f *db.DBFinding, reason string) string {
+func (s *Server) buildFindingDispatchMessage(t *Task, f *db.DBFinding, agentKey, reason string) string {
 	var b strings.Builder
+	// 显式派发的触发器模板（若存在）作为前缀：它承载各 Agent 的判定纪律与
+	// __VULNCLASS__/__SEVERITY__/__SUMMARY__ 占位符。
+	if triggers, err := s.m.pg.ListTriggersFor(agentKey); err == nil {
+		for _, tr := range triggers {
+			if !tr.Enabled || strings.TrimSpace(tr.FindingMessage) == "" {
+				continue
+			}
+			b.WriteString(strings.NewReplacer(
+				"__VULNCLASS__", f.VulnClass,
+				"__SEVERITY__", f.Severity,
+				"__SUMMARY__", f.Summary,
+			).Replace(tr.FindingMessage))
+			b.WriteString("\n\n")
+			break
+		}
+	}
+	// 显式派发也带上代码识别的执行模式：vuln_dispatcher/trace_cleaner 的判定
+	// 分支不能只依赖 planner 在 reason 里转述。
+	mode := agent.ExecutionModeFromGoal(t.Goal + "\n" + t.Description)
+	fmt.Fprintf(&b, "【本次由 planner 确认处置前提后显式派发】\nexecution_mode: %s\n", mode)
 	fmt.Fprintf(&b, "任务 #%s 新登记一条漏洞，请按你的职责处理。\n", t.ID)
 	nodeID := int64(0)
 	if f.NodeID != nil {
@@ -150,6 +170,6 @@ func (s *Server) retryFindingInvocations() {
 			continue
 		}
 		_ = s.m.pg.SetFindingInvocationConversation(it.AgentKey, it.FindingID, conv.ID)
-		go s.runFindingInvocation(conv, buildFindingDispatchMessage(t, f, it.Reason))
+		go s.runFindingInvocation(conv, s.buildFindingDispatchMessage(t, f, it.AgentKey, it.Reason))
 	}
 }

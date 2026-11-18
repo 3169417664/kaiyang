@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"time"
 
@@ -42,7 +43,19 @@ func RunCustomExecutor(ctx context.Context, cfg CustomExecutorConfig) (harness.T
 	key := "exec:" + cfg.Agent.Key
 	wk := NewWorker(cfg.Provider, cfg.Agent.Key, cfg.WorkDir, nil, 0, cfg.Agent.MaxTurns)
 	wk.SetAgentKey(cfg.Agent.Key)
-	wk.SetTaskPromptOverride(strings.TrimSpace(cfg.Prompt))
+	// 服务端（pre_agent 阶段 / 审核批准路径）已在启动本次运行前 CAS 领取意图；
+	// 把领取契约写进提示词，避免 Agent 误以为还要自己调 claim_executor_intent。
+	prompt := strings.TrimSpace(cfg.Prompt)
+	if prompt != "" {
+		prompt += "\n\n"
+	}
+	intentID := int64(0)
+	if cfg.Intent != nil {
+		intentID = cfg.Intent.ID
+	}
+	prompt += "【执行器领取契约】本次意图 #" + strconv.FormatInt(intentID, 10) +
+		" 已由服务端 CAS 领取并交给你执行（owner=exec:" + cfg.Agent.Key + "）。不要调用 claim_executor_intent 重复领取；直接执行当前意图。"
+	wk.SetTaskPromptOverride(prompt)
 	wk.SetRunTimeout(time.Duration(cfg.Agent.RunSecs) * time.Second)
 	wk.SetProxy(cfg.ProxyAddr, cfg.ProxyCACert)
 	if cfg.FindingRecorder != nil {

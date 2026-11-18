@@ -180,7 +180,7 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		log.Printf("[credentials] 存量 auth 迁移失败: %v", err)
 	}
 	agent.KnowledgeStore = s.kb()
-	s.engine.SetCustomExecutor(s.runCustomExecutor)
+	s.engine.SetCustomExecutor(s.runCustomExecutorFor)
 	s.bootstrapRBAC()
 	s.seedFusion()
 	// 模板库默认正文作为提示词四级链的第③级（任务快照 > 全局覆盖 > 模板默认 > 内置）。

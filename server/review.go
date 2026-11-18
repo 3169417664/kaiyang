@@ -1,9 +1,11 @@
 package server
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -14,6 +16,23 @@ import (
 // 意图审核 HTTP 面（KAIYANG Phase 3）。
 // AI 预审与 review 对话后续接入；当前先提供人工批准/驳回与待审列表，
 // 保证「审核开启 → 意图必须进 proposed → 人工放行」的闸门闭环。
+
+// reviewTargetExecutor 从批准后的意图 payload 读取执行器 key。
+// 审核批准会把 pending_executor 转正为 executor；没有预选时 executor 被删除，
+// 返回空串（由默认 worker 执行）。
+func reviewTargetExecutor(payload json.RawMessage) string {
+	var p struct {
+		Executor string `json:"executor"`
+	}
+	if json.Unmarshal(payload, &p) != nil {
+		return ""
+	}
+	key := strings.TrimSpace(p.Executor)
+	if key == "review" {
+		return ""
+	}
+	return key
+}
 
 // PUT /api/tasks/{id}/review/config — 运行时开关审核。
 func (s *Server) reviewConfig(w http.ResponseWriter, r *http.Request) {
@@ -142,5 +161,24 @@ func (s *Server) reviewAction(w http.ResponseWriter, r *http.Request, approve bo
 		"任务 "+t.ID+" 意图 "+strconv.FormatInt(intentID, 10), nil)
 	// 批准后唤醒 planner 继续规划；驳回也让 planner 看到驳回稿。
 	t.Notify()
+	// 批准的 target_executor：没有 pre_agent 的任务也要真正启动自定义执行器，
+	// 否则 open + payload.executor=<key> 的意图既不会被默认 worker 领取
+	// （Frontier 排除 executor），也不会进 pre_agent 阶段，只能永久滞留。
+	if approve {
+		if n, e := t.Store.GetNode(intentID); e == nil && n != nil {
+			if key := reviewTargetExecutor(n.Payload); key != "" {
+				runCtx := s.ctx
+				if runCtx == nil {
+					runCtx = context.Background()
+				}
+				go func() {
+					if err := s.engine.RunApprovedExecutor(runCtx, t, key, n); err != nil {
+						log.Printf("[review] task %s 意图 %d 目标执行器 %q 启动失败: %v", t.ID, intentID, key, err)
+						t.Notify()
+					}
+				}()
+			}
+		}
+	}
 	writeJSON(w, 200, map[string]any{"ok": true})
 }

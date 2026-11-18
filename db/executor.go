@@ -45,13 +45,39 @@ WHERE id=$2 AND exploration_id=$3 AND kind='intent'
 	return n == 1, nil
 }
 
-// HasCustomExecutorIntentActive 报告指定执行器是否还有 running 的意图。
+// HasCustomExecutorIntentActive 报告指定执行器是否仍有活动中的意图。
+// active = proposed/open/running/paused；done/blocked/exhausted/stopped/deleted
+// 都不再算。pre_agent 阶段用它决定「执行器阶段是否结束」。
 func (s *ExplorationStore) HasCustomExecutorIntentActive(executorKey string) (bool, error) {
+	executorKey = strings.TrimSpace(executorKey)
+	if executorKey == "" || executorKey == "review" {
+		return false, nil
+	}
 	var exists bool
 	err := s.db.QueryRow(`SELECT EXISTS(
 SELECT 1 FROM exploration_nodes
-WHERE exploration_id=$1 AND kind='intent' AND state='running' AND owner=$2)`,
-		s.expID, "exec:"+strings.TrimSpace(executorKey)).Scan(&exists)
+WHERE exploration_id=$1 AND kind='intent'
+  AND COALESCE(payload->>'executor','')=$2
+  AND state IN ('proposed','open','running','paused'))`, s.expID, executorKey).Scan(&exists)
+	return exists, err
+}
+
+// HasPendingUncontrolledCustomIntent 是「不受 Planner 控制」意图的单一门控查询：
+// kind='intent'、payload.executor 非空且非 'review'、该 executor 对应 Agent 的
+// 当前 planner_controlled=false，且 state 尚未放行（done 放行；deleted/物理删除
+// 无行即放行）。Agent 缺失按默认 true（不受门控）处理。
+//
+// 语义：自定义 Agent 的首个 hold_until_done 意图执行期间，planner 不自动唤醒、
+// 不改派；只有真实 done 或人工删除才解除。开关按 Agent 当前配置即时生效。
+func (s *ExplorationStore) HasPendingUncontrolledCustomIntent() (bool, error) {
+	var exists bool
+	err := s.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM exploration_nodes
+LEFT JOIN agents a ON a.executor_key=exploration_nodes.payload->>'executor'
+  OR a.key=exploration_nodes.payload->>'executor'
+WHERE exploration_nodes.exploration_id=$1 AND exploration_nodes.kind='intent'
+  AND COALESCE(exploration_nodes.payload->>'executor','') NOT IN ('','review')
+  AND COALESCE(a.planner_controlled,true)=false
+  AND exploration_nodes.state NOT IN ('done','deleted'))`, s.expID).Scan(&exists)
 	return exists, err
 }
 
