@@ -3,16 +3,17 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/Autumn-27/norma/permission"
-	actool "github.com/Autumn-27/norma/tool"
 	"github.com/3169417664/kaiyang/agent"
 	"github.com/3169417664/kaiyang/db"
+	"github.com/Autumn-27/norma/permission"
+	actool "github.com/Autumn-27/norma/tool"
 )
 
 // jsonResult marshals v to a JSON tool result.
@@ -42,7 +43,7 @@ func (s *Server) hostTools() ([]actool.CoreTool, map[string][]string) {
 	tools = append(tools, s.orchestrationTools()...)
 	tools = append(tools, s.findingRetestTools()...)
 	tools = append(tools, s.platformTools()...) // 平台操作工具(建改 skill/工具/MCP，给 Auto 用)
-	tools = append(tools, s.proxyTools()...)     // 代理池：状态查询 + 坏出口上报
+	tools = append(tools, s.proxyTools()...)    // 代理池：状态查询 + 坏出口上报
 	custom, err := s.customTools()
 	if err != nil {
 		log.Printf("[custom-tool] 加载失败: %v", err)
@@ -253,6 +254,12 @@ func (s *Server) toolSpawnTask() actool.CoreTool {
 			"goal":                   strParam("任务目标(要达成什么)"),
 			"parent_ref":             strParam("可选：父任务 id(做父子关联)"),
 			"source_task_ids":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": fmt.Sprintf("可选：只读继承的来源任务 id 列表(最多 %d 个)。子任务可只读引用这些任务已探明的资产/结论作为起点；与 parent_ref 的纯父子指针不同，这是内容继承。", db.MaxTaskSourceCount)},
+			"finding_id":             map[string]any{"type": "integer", "description": "可选：内网派发时必填，触发 Finding 的全局 id；服务端按 Finding 实际 IP/域名做同资产去重，已存在任务时直接返回已有 task_id"},
+			"target_asset":           strParam("可选：多主机 Finding 的精确资产 IP/域名/URL；仅在该 Finding 关联多个不同主机时使用"),
+			"pre_agent":              strParam("可选：种子意图的自定义执行器 Agent key（须已启用、非内置）；留空=默认 worker 执行种子意图"),
+			"planner_template_id":    map[string]any{"type": "integer", "description": "可选（兼容旧调用）：从 planner 模板库按数字 id 选预设模板，正文在创建时快照进任务"},
+			"planner_template_nkey":  strParam("可选：从 planner 模板库按稳定规范化名 nkey 选预设模板，正文在创建时快照；与 planner_template_id 互斥"),
+			"worker_count":           map[string]any{"type": "integer", "description": "可选：任务级 worker 并发数，合法区间 0~16；0 或省略=跟随全局默认"},
 			"llm_profile_id":         map[string]any{"type": "integer", "description": "可选：指定本子任务 planner/worker 用的 LLM 配置 id(见 list_llm_profiles)；留空则继承父任务、再回退全局激活配置"},
 			"timeout_seconds":        map[string]any{"type": "integer", "description": "可选：任务级超时(秒)。到点后触发优雅收尾并进入 timeout 终态；留空或 0 = 不限时"},
 			"plan_heartbeat_seconds": map[string]any{"type": "integer", "description": "可选：planner 心跳触发间隔(秒)。距上轮规划结束/任务开始满该值且期间无触发 → 触发一轮规划(兜底死锁 + 唤醒去监督飞行中的 worker)。留空或 0 = 默认 600(10min)；"},
@@ -264,6 +271,12 @@ func (s *Server) toolSpawnTask() actool.CoreTool {
 				Goal                 string          `json:"goal"`
 				ParentRef            string          `json:"parent_ref"`
 				SourceTaskIDs        []string        `json:"source_task_ids"`
+				FindingID            int64           `json:"finding_id"`
+				TargetAsset          string          `json:"target_asset"`
+				PreAgent             string          `json:"pre_agent"`
+				PlannerTemplateID    int64           `json:"planner_template_id"`
+				PlannerTemplateNKey  string          `json:"planner_template_nkey"`
+				WorkerCount          int             `json:"worker_count"`
 				LLMProfileID         json.RawMessage `json:"llm_profile_id"`
 				TimeoutSeconds       int             `json:"timeout_seconds"`
 				PlanHeartbeatSeconds int             `json:"plan_heartbeat_seconds"`
@@ -312,13 +325,59 @@ func (s *Server) toolSpawnTask() actool.CoreTool {
 			if pin != nil {
 				llmIDs = []int64{*pin}
 			}
+			// pre_agent：必须是可执行的自定义 Agent，且不能是内置 Agent。
+			preAgent := strings.TrimSpace(a.PreAgent)
+			if preAgent != "" {
+				pa, paErr := s.m.pg.GetAgentByKey(preAgent)
+				if paErr != nil || pa == nil {
+					return actool.Errorf(fmt.Sprintf("pre_agent %q 不存在", preAgent)), nil
+				}
+				if !pa.Enabled || pa.Builtin {
+					return actool.Errorf(fmt.Sprintf("pre_agent %q 必须是已启用、非内置的自定义 Agent", preAgent)), nil
+				}
+			}
+			if a.PlannerTemplateID > 0 && strings.TrimSpace(a.PlannerTemplateNKey) != "" {
+				return actool.Errorf("planner_template_id 与 planner_template_nkey 互斥，请只传一个"), nil
+			}
+			if a.WorkerCount < 0 || a.WorkerCount > 16 {
+				return actool.Errorf("worker_count 合法区间 0~16（0=跟随全局）"), nil
+			}
+			// 内网派发：finding_id 按实际资产键去重。已有同资产任务时直接返回
+			// 已有 task_id（vuln_dispatcher 不应重复派生），并把该 Finding 追加进去
+			// 的下一步交给 append_finding_to_task。
+			var dispatchKeys []string
+			if a.FindingID > 0 {
+				keys, keyErr := s.findingDispatchAssetKeys(a.FindingID, a.TargetAsset)
+				if keyErr != nil {
+					return actool.Errorf(keyErr.Error()), nil
+				}
+				dispatchKeys = keys
+				for _, key := range keys {
+					if tid, fid, ok, _ := s.m.pg.GetTaskDispatchTarget(key); ok {
+						return jsonResult(map[string]any{
+							"status": "existing_task", "task_id": strconv.FormatInt(tid, 10),
+							"finding_id": fid, "asset_key": key,
+							"hint": "同一资产已有内网任务；改用 append_finding_to_task 补充 Finding，不要新建",
+						})
+					}
+				}
+			}
 			t, err := s.m.CreateTaskWithOptions(a.Description, a.Goal, db.TaskCreateOptions{
 				SourceTaskIDs:        sourceIDs,
 				LLMProfileIDs:        llmIDs,
 				TimeoutSeconds:       a.TimeoutSeconds,
 				PlanHeartbeatSeconds: a.PlanHeartbeatSeconds,
+				PreAgent:             preAgent,
+				PlannerTemplateID:    a.PlannerTemplateID,
+				PlannerTemplateNKey:  strings.TrimSpace(a.PlannerTemplateNKey),
+				WorkerCount:          a.WorkerCount,
+				DispatchAssetKeys:    dispatchKeys,
+				DispatchFindingID:    a.FindingID,
 			})
 			if err != nil {
+				if errors.Is(err, db.ErrTaskDispatchTargetExists) {
+					return actool.Errorf("同一资产已被其他内网任务登记（并发派发被唯一约束拦截）：" + err.Error()), nil
+				}
 				return actool.Errorf(err.Error()), nil
 			}
 			if a.ParentRef != "" {
@@ -355,10 +414,35 @@ func (s *Server) toolPauseTask() actool.CoreTool {
 }
 
 func (s *Server) toolGetTaskGraph() actool.CoreTool {
-	return roTool("get_task_graph", "读指定任务的探索图总览(同 graph_overview：资产计数/frontier/发现/覆盖等)，用 task_id 指定任务。",
+	return roTool("get_task_graph", "读指定任务的探索图总览(同 graph_overview：资产计数/frontier/发现/覆盖等)，并附带该任务已派生的子任务列表(child_tasks：派发去重的依据)，用 task_id 指定任务。",
 		objSchema(map[string]any{"task_id": strParam("任务 id")}, "task_id"),
 		func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
-			return s.delegateToTask(ctx, in, (*agent.ToolSet).GraphOverviewTool)
+			res, err := s.delegateToTask(ctx, in, (*agent.ToolSet).GraphOverviewTool)
+			if err != nil {
+				return res, err
+			}
+			// 探索图本身不含任务派生关系；把 child_tasks 并进 JSON，vuln_dispatcher
+			// 的同资产去重才有数据可查。
+			var head struct {
+				TaskID string `json:"task_id"`
+			}
+			_ = json.Unmarshal(in, &head)
+			pid, perr := strconv.ParseInt(strings.TrimSpace(head.TaskID), 10, 64)
+			if perr != nil {
+				return res, nil
+			}
+			children, cerr := s.m.pg.ChildTasksByParentRef(pid)
+			if cerr != nil {
+				return res, nil
+			}
+			txt := res.Flatten()
+			var obj map[string]any
+			if json.Unmarshal([]byte(txt), &obj) != nil {
+				return res, nil
+			}
+			obj["child_tasks"] = children
+			merged, _ := json.Marshal(obj)
+			return actool.Text(string(merged)), nil
 		})
 }
 

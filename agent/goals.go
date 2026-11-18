@@ -6,12 +6,12 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/3169417664/kaiyang/db"
 	"github.com/Autumn-27/norma/agentcore"
 	"github.com/Autumn-27/norma/llm"
 	acperm "github.com/Autumn-27/norma/permission"
 	actool "github.com/Autumn-27/norma/tool"
 	"github.com/Autumn-27/norma/transcript"
-	"github.com/3169417664/kaiyang/db"
 )
 
 // goalsDefaultTmpl is the built-in EDITABLE body (段 [A]) of the goals-decomposer
@@ -130,6 +130,10 @@ func DecomposeGoalsWithProvider(ctx context.Context, prov llm.Provider, dataDir,
 	// {{.EngagementDescription}} template var — else a prompt that references the var
 	// would inject the description twice. System prompt stays pure static instructions.
 	sys := renderSystem("goals", goalsDefaultTmpl, GoalsVars{DataDir: dataDir, Now: nowStr()})
+	// 执行模式代码尾巴：目标文本明确「只验证漏洞、不需要 Shell」时，Goal 不得
+	// 再把 getshell/立足点写成完成条件。识别逻辑在 execution_mode.go，老库提示词
+	// 不需要重复这段契约。
+	sys += goalExecutionModeSpec(goalText, desc)
 	// 验收标准代码尾巴：即使老库的 goals 提示词只 seed 过一次、用户没重播，
 	// criteria 也必须写成“匿名读 N 条含敏感字段 / 两身份越权回读 / 自建对象写测试回读”式危害证明。
 	sys += goalsVerificationTail

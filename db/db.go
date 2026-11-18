@@ -299,6 +299,9 @@ ON CONFLICT (name) DO NOTHING`,
 	if err := d.seedDefaultInterceptRulesV5(); err != nil {
 		return fmt.Errorf("seed intercept rules v5: %w", err)
 	}
+	if err := d.seedDefaultInterceptRulesV6(); err != nil {
+		return fmt.Errorf("seed intercept rules v6: %w", err)
+	}
 	if err := d.migrateListenerRuleTimeout(); err != nil {
 		return fmt.Errorf("migrate listener rule timeout: %w", err)
 	}
@@ -430,10 +433,10 @@ func (d *DB) seedBuiltinInterceptRulesBatch(batch, flag string) error {
 			continue
 		}
 		if _, err := d.Exec(`
-INSERT INTO intercept_rules(name, enabled, priority, match_target, match_type, pattern, action, message, timeout_enabled, timeout_seconds, timeout_action)
-VALUES ($1, true, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+INSERT INTO intercept_rules(name, enabled, priority, match_target, match_type, tool_scope, pattern, action, message, timeout_enabled, timeout_seconds, timeout_action)
+VALUES ($1, true, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11)
 ON CONFLICT DO NOTHING`,
-			r.name, r.priority, r.target, r.typ, r.pattern, r.action, r.message,
+			r.name, r.priority, r.target, r.typ, toolScopeJSON(r.toolScope), r.pattern, r.action, r.message,
 			r.timeoutEnabled, r.timeoutSeconds, r.timeoutAction,
 		); err != nil {
 			return fmt.Errorf("rule %q: %w", r.name, err)
@@ -499,10 +502,10 @@ func (d *DB) seedDefaultInterceptRulesV4() error {
 			continue // 已有（可能是 v0.3.85 种的或用户编辑过的）——不动
 		}
 		if _, err := d.Exec(`
-INSERT INTO intercept_rules(name, enabled, priority, match_target, match_type, pattern, action, message, timeout_enabled, timeout_seconds, timeout_action)
-VALUES ($1, true, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+INSERT INTO intercept_rules(name, enabled, priority, match_target, match_type, tool_scope, pattern, action, message, timeout_enabled, timeout_seconds, timeout_action)
+VALUES ($1, true, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11)
 ON CONFLICT DO NOTHING`,
-			r.name, r.priority, r.target, r.typ, r.pattern, r.action, r.message,
+			r.name, r.priority, r.target, r.typ, toolScopeJSON(r.toolScope), r.pattern, r.action, r.message,
 			r.timeoutEnabled, r.timeoutSeconds, r.timeoutAction,
 		); err != nil {
 			return fmt.Errorf("reseed listener rule: %w", err)
@@ -704,10 +707,10 @@ func (d *DB) seedDefaultInterceptRulesV5() error {
 			continue // 用户编辑过或已插入——不动
 		}
 		if _, err := d.Exec(`
-INSERT INTO intercept_rules(name, enabled, priority, match_target, match_type, pattern, action, message, timeout_enabled, timeout_seconds, timeout_action)
-VALUES ($1, true, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+INSERT INTO intercept_rules(name, enabled, priority, match_target, match_type, tool_scope, pattern, action, message, timeout_enabled, timeout_seconds, timeout_action)
+VALUES ($1, true, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11)
 ON CONFLICT DO NOTHING`,
-			r.name, r.priority, r.target, r.typ, r.pattern, r.action, r.message,
+			r.name, r.priority, r.target, r.typ, toolScopeJSON(r.toolScope), r.pattern, r.action, r.message,
 			r.timeoutEnabled, r.timeoutSeconds, r.timeoutAction,
 		); err != nil {
 			return fmt.Errorf("reseed v5 rule %q: %w", r.name, err)
@@ -718,6 +721,54 @@ ON CONFLICT DO NOTHING`,
 		return err
 	} else if ok {
 		if merged, changed := mergeEnabledInterceptTools(raw, "goal_met"); changed {
+			if err := d.SetSetting("intercept_enabled_tools", merged); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// seedDefaultInterceptRulesV6 给痕迹清理动作加人工确认闸门。
+//
+// trace_cleaner 只有在用户明确确认清理计划后才执行删除/覆写；提示词约束之外，
+// 平台还要对写/删类工具落一层 ask 规则（Bash 的 rm/unlink/shred、Write/Edit 的
+// 测试产物路径、专用删除工具）。规则只命中路径关键词，避免把普通报告正文或
+// 无关的 rm /tmp_out.$$ 误拦成高危审批。
+//
+// 与 V4/V5 相同的升级缺陷防护：flag 早退也可能吞掉新规则，所以按名补种；
+// 已存在的规则（可能是用户改过的）保持原样。
+func (d *DB) seedDefaultInterceptRulesV6() error {
+	if err := d.seedBuiltinInterceptRulesBatch("v6", "intercept_default_rules_v6_trace_cleaner"); err != nil {
+		return err
+	}
+	for _, r := range builtinInterceptRules {
+		if r.seedBatch != "v6" {
+			continue
+		}
+		var exists bool
+		if err := d.QueryRow(`SELECT EXISTS(SELECT 1 FROM intercept_rules WHERE name=$1)`, r.name).Scan(&exists); err != nil {
+			return fmt.Errorf("probe v6 rule %q: %w", r.name, err)
+		}
+		if exists {
+			continue // 用户编辑过或已插入——不动
+		}
+		if _, err := d.Exec(`
+INSERT INTO intercept_rules(name, enabled, priority, match_target, match_type, tool_scope, pattern, action, message, timeout_enabled, timeout_seconds, timeout_action)
+VALUES ($1, true, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11)
+ON CONFLICT DO NOTHING`,
+			r.name, r.priority, r.target, r.typ, toolScopeJSON(r.toolScope), r.pattern, r.action, r.message,
+			r.timeoutEnabled, r.timeoutSeconds, r.timeoutAction,
+		); err != nil {
+			return fmt.Errorf("reseed v6 rule %q: %w", r.name, err)
+		}
+	}
+	// 清理工具必须进入拦截工具集，否则规则永远不会被求值。
+	if raw, ok, err := d.GetSetting("intercept_enabled_tools"); err != nil {
+		return err
+	} else if ok {
+		if merged, changed := mergeEnabledInterceptTools(raw,
+			"Write", "Edit", "MultiEdit", "Delete", "delete_file", "file_delete", "remove_file"); changed {
 			if err := d.SetSetting("intercept_enabled_tools", merged); err != nil {
 				return err
 			}

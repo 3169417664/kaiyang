@@ -2051,6 +2051,41 @@ export interface ReportRecord {
   created_at: string;
 }
 
+// 报告模板（Phase 5）：按客户/项目复用公司名、Logo、人员、CVSS 与语言。
+export interface ReportTemplate {
+  id: number;
+  name: string;
+  company_name: string;
+  company_name_en: string;
+  logo_path: string;
+  personnel_json: Array<{ name: string; role?: string; contact?: string }> | string[];
+  cvss_version: string;
+  locale: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface ReportTemplateInput {
+  name: string;
+  company_name: string;
+  company_name_en: string;
+  logo_path: string;
+  personnel_json: unknown;
+  cvss_version: string;
+  locale: string;
+}
+
+// 报告资产上传结果（Logo）。
+export interface ReportAsset {
+  path: string;
+  name: string;
+  file: string;
+  url: string;
+  size: number;
+  sha256: string;
+  source?: string;
+}
+
 export interface FindingEnrichment {
   finding_id: number;
   node_id?: number;
@@ -2120,11 +2155,22 @@ export interface TopologyEdge {
   dst_ip: string;
   label: string;
 }
+export interface TopologyGroup {
+  id: number;
+  name: string;
+  color: string;
+}
+export interface TopologyNote {
+  id: number;
+  content: string;
+  x: number;
+  y: number;
+}
 export interface TopologyData {
   nodes: TopologyNode[];
   edges: TopologyEdge[];
-  groups: Array<{ id: number; name: string; color: string }>;
-  notes: Array<{ id: number; content: string; x: number; y: number }>;
+  groups: TopologyGroup[];
+  notes: TopologyNote[];
 }
 
 // ---- 内网凭据（KAIYANG Phase 7）----

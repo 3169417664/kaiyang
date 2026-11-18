@@ -58,11 +58,17 @@ import type {
   RbacUser,
   ReportRecord,
   ReportSettings,
+  ReportTemplate,
+  ReportTemplateInput,
+  ReportAsset,
   FindingEnrichment,
   KnowledgeDoc,
   KnowledgeHit,
   KnowledgeConfig,
   TopologyData,
+  TopologyEdge,
+  TopologyGroup,
+  TopologyNote,
   IntranetCredential,
   IntentAsset,
   InterceptApprovalFilter,
@@ -1115,12 +1121,33 @@ export const api = {
 
   // ---- 内网拓扑 ----
   topology: (taskId: string) => get<TopologyData>(`/tasks/${encodeURIComponent(taskId)}/topology`),
-  upsertTopologyNode: (taskId: string, n: { ip: string; hostname?: string; display_label?: string; notes?: string; x?: number; y?: number }) =>
-    post<{ ok: boolean }>(`/tasks/${encodeURIComponent(taskId)}/topology/nodes`, n),
+  upsertTopologyNode: (taskId: string, n: { ip: string; hostname?: string; display_label?: string; group_id?: number | null; notes?: string; x?: number; y?: number }) =>
+    post<{ ok: boolean; ip: string }>(`/tasks/${encodeURIComponent(taskId)}/topology/nodes`, n),
+  patchTopologyNode: (
+    taskId: string,
+    ip: string,
+    body: { hostname?: string; display_label?: string; group_id?: number | null; notes?: string; x?: number; y?: number },
+  ) => patch<{ ok: boolean }>(`/tasks/${encodeURIComponent(taskId)}/topology/nodes/${encodeURIComponent(ip)}`, body),
   deleteTopologyNode: (taskId: string, ip: string) =>
     del<{ ok: boolean }>(`/tasks/${encodeURIComponent(taskId)}/topology/nodes/${encodeURIComponent(ip)}`),
   addTopologyEdge: (taskId: string, e: { src_ip: string; dst_ip: string; label?: string }) =>
-    post<{ id: number }>(`/tasks/${encodeURIComponent(taskId)}/topology/edges`, e),
+    post<TopologyEdge>(`/tasks/${encodeURIComponent(taskId)}/topology/edges`, e),
+  patchTopologyEdge: (taskId: string, id: number, e: { label?: string; src_ip?: string; dst_ip?: string }) =>
+    patch<{ ok: boolean }>(`/tasks/${encodeURIComponent(taskId)}/topology/edges/${id}`, e),
+  deleteTopologyEdge: (taskId: string, id: number) =>
+    del<{ ok: boolean }>(`/tasks/${encodeURIComponent(taskId)}/topology/edges/${id}`),
+  addTopologyGroup: (taskId: string, g: { name: string; color?: string }) =>
+    post<TopologyGroup>(`/tasks/${encodeURIComponent(taskId)}/topology/groups`, g),
+  patchTopologyGroup: (taskId: string, id: number, g: { name?: string; color?: string }) =>
+    patch<{ ok: boolean }>(`/tasks/${encodeURIComponent(taskId)}/topology/groups/${id}`, g),
+  deleteTopologyGroup: (taskId: string, id: number) =>
+    del<{ ok: boolean }>(`/tasks/${encodeURIComponent(taskId)}/topology/groups/${id}`),
+  addTopologyNote: (taskId: string, n: { content: string; x?: number; y?: number }) =>
+    post<TopologyNote>(`/tasks/${encodeURIComponent(taskId)}/topology/notes`, n),
+  patchTopologyNote: (taskId: string, id: number, n: { content?: string; x?: number; y?: number }) =>
+    patch<{ ok: boolean }>(`/tasks/${encodeURIComponent(taskId)}/topology/notes/${id}`, n),
+  deleteTopologyNote: (taskId: string, id: number) =>
+    del<{ ok: boolean }>(`/tasks/${encodeURIComponent(taskId)}/topology/notes/${id}`),
 
   // ---- 知识库 ----
   knowledgeDocs: (scope = "global", task?: string) => {
@@ -1149,15 +1176,45 @@ export const api = {
   reportSettings: () => get<ReportSettings>("/report-settings"),
   saveReportSettings: (s: ReportSettings) => put<{ ok: boolean }>("/report-settings", s),
   reports: () => get<{ reports: ReportRecord[] }>("/reports").then((r) => r.reports ?? []),
-  generateReport: (taskId: string, findingIds?: number[], company?: string) =>
-    post<{ report_id: number; status: string }>("/reports/generate", { task_id: taskId, finding_ids: findingIds, company }),
+  generateReport: (taskId: string, findingIds?: number[], company?: string, templateId?: number, includeStatuses?: string[]) =>
+    post<{ report_id: number; status: string }>("/reports/generate", {
+      task_id: taskId, finding_ids: findingIds, company,
+      template_id: templateId, include_statuses: includeStatuses,
+    }),
   reportStatus: (id: number) => get<ReportRecord>(`/reports/${id}`),
   deleteReport: (id: number) => del<{ ok: boolean }>(`/reports/${id}`),
+
+  // 报告模板 CRUD
+  reportTemplates: () =>
+    get<{ templates: ReportTemplate[] }>("/report-templates").then((r) => r.templates ?? []),
+  createReportTemplate: (input: ReportTemplateInput) => post<ReportTemplate>("/report-templates", input),
+  updateReportTemplate: (id: number, input: ReportTemplateInput) =>
+    put<ReportTemplate>(`/report-templates/${id}`, input),
+  deleteReportTemplate: (id: number) => del<{ ok: boolean }>(`/report-templates/${id}`),
+  // Logo 上传：multipart file → report_assets/assets/<sha>.<ext>
+  uploadReportLogo: async (file: File) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    const token = getToken();
+    const res = await fetch("/api/report-assets/logo", {
+      method: "POST", body: fd, headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!res.ok) {
+      let msg = `上传失败: ${res.status}`;
+      try { const p = (await res.json()) as { error?: string }; if (p.error) msg = p.error; } catch { /* ignore */ }
+      throw new Error(msg);
+    }
+    return (await res.json()) as ReportAsset;
+  },
+  reportAssetUrl: (file: string) => `/api/report-assets/${encodeURIComponent(file)}`,
+
   findingEnrichment: (id: number) =>
     get<{ enrichment: FindingEnrichment | null; reproduction: unknown }>(`/findings/${id}/enrichment`),
   saveFindingEnrichment: (id: number, e: FindingEnrichment) => put<{ ok: boolean }>(`/findings/${id}/enrichment`, e),
   saveFindingReproduction: (id: number, reproduction: unknown) =>
     put<{ ok: boolean }>(`/findings/${id}/reproduction`, reproduction),
+  enrichFinding: (id: number) =>
+    post<{ ok: boolean; enrichment: FindingEnrichment }>(`/findings/${id}/enrich`),
 
   // 任务总报告 Word 导出(浏览器侧触发下载;需带 JWT)
   downloadTaskDocx: async (task: string) => {

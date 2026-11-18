@@ -103,7 +103,7 @@ COPY docker/install-tools.sh /tmp/install-tools.sh
 # 平台自带的 MCP 服务器（FOFA 资产测绘等）；相对路径由 start.sh 的 cwd(/app) 解析
 COPY mcp-servers/ /app/mcp-servers/
 # uv：MCP 预设「FOFA 资产测绘」用它拉起 Python stdio server
-RUN python3 -m pip install --no-cache-dir --quiet uv && uv --version
+RUN python3 -m pip install --no-cache-dir --quiet uv python-docx pdfplumber && uv --version
 RUN bash /tmp/install-tools.sh && rm -f /tmp/install-tools.sh
 # 注：catalog 全量 90 项的补齐**不在构建期做**（会把镜像再撑大 1–2GB、构建时间翻倍）。
 # 改为容器首次启动时后台预装（见 docker/docker-entrypoint.sh）：主服务不被阻塞，

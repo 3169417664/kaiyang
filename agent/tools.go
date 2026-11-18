@@ -11,11 +11,11 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	acperm "github.com/Autumn-27/norma/permission"
-	actool "github.com/Autumn-27/norma/tool"
 	"github.com/3169417664/kaiyang/db"
 	"github.com/3169417664/kaiyang/hosttools"
 	"github.com/3169417664/kaiyang/knowledge"
+	acperm "github.com/Autumn-27/norma/permission"
+	actool "github.com/Autumn-27/norma/tool"
 )
 
 // compactIntents distills intents to {id, summary, state, asset_ids, parents,
@@ -102,8 +102,8 @@ type ToolSet struct {
 	// executorKey 非空时当前 ToolSet 属于自定义执行器，可领取匹配意图。
 	executorKey string
 	// kb 是知识库服务（nil=未启用）。
-	kb *knowledge.Service
-	as              *db.AssetStore   // asset store (optional; nil = asset tools not available)
+	kb     *knowledge.Service
+	as     *db.AssetStore   // asset store (optional; nil = asset tools not available)
 	cs     *db.CompanyStore // company store (optional)
 	ts     *db.ExplorationStore
 	worker string
@@ -245,7 +245,6 @@ func (t *ToolSet) SetReviewEnabled(fn func() bool) { t.reviewEnabledFn = fn }
 
 // SetExecutorKey 标记当前 ToolSet 所属的自定义执行器。
 func (t *ToolSet) SetExecutorKey(key string) { t.executorKey = key }
-
 
 // SetArtifactRecorder 注入证据附件存储（host 实现）。
 func (t *ToolSet) SetArtifactRecorder(r ArtifactRecorder) { t.artifactRecorder = r }
@@ -1860,6 +1859,16 @@ func (t *ToolSet) addFinding() actool.CoreTool {
 		"evidence_hint_id": idp("可选：本任务中对应此漏洞的提示节点 ID，自动携带其结构化 traffic_refs；不能引用继承提示或其他漏洞的提示"),
 		"traffic_refs": map[string]any{"type": "array", "description": "可选；HTTP/HTTPS 漏洞先检索并逐条核实请求/响应确实支持漏洞结论，再按复现顺序填写真实 ID。TCP 等非 HTTP 漏洞、未采集或找不到确切记录时省略或传 []，不阻止上报；可在 evidence 说明原因并提供其他可验证证据。不要猜测 ID、按域名/时间推定关联或仅为补包重复探测。用途 baseline 正常对照 / proof 漏洞证明 / verification 补充验证 / supporting 辅助证据。若某个 ID 不存在，漏洞仍会正常入库，该 ID 会在返回值的 skipped_traffic_refs 里列出，可用 traffic_get 核实后用 bind_finding_traffic 补绑。",
 			"items": obj(map[string]any{"traffic_id": str("traffic_search 返回的真实流量 ID"), "role": map[string]any{"type": "string", "enum": []string{"baseline", "proof", "verification", "supporting"}}, "note": str("该流量如何支持漏洞结论")}, "traffic_id")},
+		"reproduction": obj(map[string]any{
+			"entry_point":   str("可选：漏洞入口（URL/端点/参数）"),
+			"prerequisites": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "可选：复现前置条件"},
+			"steps": map[string]any{"type": "array", "description": "可选：按顺序的复现步骤", "items": obj(map[string]any{
+				"request": str("请求报文（curl/raw HTTP）"), "response": str("响应关键片段"),
+				"expected": str("预期结果"), "proves": str("该步骤证明什么"),
+				"exchange_id": str("可选：对应流量证据 ID"),
+			})},
+			"provenance": str("可选：证据来源说明（工具/流量/手工）"),
+		}),
 	}, "vulnclass", "severity", "summary"), func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
 		var a struct {
 			VulnClass, Name, Severity, Summary, Evidence string
@@ -1868,6 +1877,7 @@ func (t *ToolSet) addFinding() actool.CoreTool {
 			AssetIDs                                     []json.RawMessage `json:"asset_ids"`
 			TrafficRefs                                  []db.TrafficRef   `json:"traffic_refs"`
 			EvidenceHintID                               json.RawMessage   `json:"evidence_hint_id"`
+			Reproduction                                 json.RawMessage   `json:"reproduction"`
 		}
 		if err := json.Unmarshal(in, &a); err != nil {
 			return actool.Errorf(err.Error()), nil
@@ -1942,7 +1952,7 @@ func (t *ToolSet) addFinding() actool.CoreTool {
 		if msg := t.scopeGuardError(pidList(a.AssetIDs)); msg != "" {
 			return actool.Errorf(msg), nil
 		}
-		input := db.RecordFindingInput{TaskID: t.taskID, ExplorationID: t.ts.ID(), IntentID: pid(a.IntentID), VulnClass: a.VulnClass, Name: a.Name, Severity: a.Severity, Summary: a.Summary, Evidence: a.Evidence, RootCauseKey: a.RootCauseKey, Worker: t.worker, AssetIDs: pidList(a.AssetIDs), CrossTaskNotifyDedup: t.CrossTaskNotifyDedup}
+		input := db.RecordFindingInput{TaskID: t.taskID, ExplorationID: t.ts.ID(), IntentID: pid(a.IntentID), VulnClass: a.VulnClass, Name: a.Name, Severity: a.Severity, Summary: a.Summary, Evidence: a.Evidence, RootCauseKey: a.RootCauseKey, Worker: t.worker, AssetIDs: pidList(a.AssetIDs), CrossTaskNotifyDedup: t.CrossTaskNotifyDedup, Reproduction: a.Reproduction}
 		var recorded *db.RecordedFinding
 		if t.findingRecorder != nil {
 			recorded, err = t.findingRecorder.Record(ctx, input, refs)

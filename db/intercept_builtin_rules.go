@@ -60,6 +60,8 @@ type builtinRule struct {
 	name string
 	// target 是匹配目标：tool_name | tool_input。
 	target string
+	// toolScope 限定规则适用的工具名；空 = 不限工具（与 intercept_rules.tool_scope 同义）。
+	toolScope []string
 	// typ 是匹配类型：string | regex。
 	typ string
 	// pattern 是匹配模式。
@@ -533,6 +535,62 @@ var builtinInterceptRules = []builtinRule{
 		timeoutSeconds: judgeTimeoutSeconds,
 		timeoutAction:  judgeTimeoutActionAllow,
 		priority:       90,
+	},
+
+	// ── 痕迹清理：删除/覆写测试产物前必须人工确认 ─────────────────────
+	// trace_cleaner 会按 [投放] 事实删除本次测试落地的文件。这类动作可能误删
+	// 业务数据，规则层无法区分「测试产物」与「生产文件」，因此一律转人工审批
+	// （ask），而不是 deny（合法的清理需要继续）或 judge（删除后果不可逆，
+	// 应由人拍板）。tool_scope 把范围收窄到写/删类工具，避免报告正文触发。
+	{
+		name:      "[内置] 痕迹清理命令（Bash 删除/覆写测试产物）",
+		seedBatch: "v6",
+		target:    "tool_input",
+		typ:       "regex",
+		toolScope: []string{"Bash", "shell_open", "shell_send"},
+		// 清理动词 + 测试产物路径/文件名关键词。路径必须带分隔符锚点，避免
+		// /tmpfoo 或模型正文里偶然出现的 rm 单词误命中。
+		pattern:        `(?i)\b(?:rm|rmdir|unlink|shred|wipe|truncate)\b[^\n]{0,300}(?:/tmp/|/var/tmp/|/dev/shm/|/uploads?/|/images?/|/static/|/avatar|(?:^|[/"'\s])(?:webshell|backdoor|payload|beacon|shell|cmd|upload)[\w.-]*\.(?:php\d?|jspx?|aspx?|ashx|war|jar|py|pl|rb)\b|(?:^|[/"'\s])[\w.-]+\.(?:php\d?|jspx?|aspx?|ashx)\b)`,
+		action:         "ask",
+		class:          classAsk,
+		rationale:      "痕迹清理删除/覆写的是目标主机上的文件；规则层看不到文件归属，可能是本次测试产物（合法清理），也可能是业务文件（破坏）。删除不可逆，必须人工确认清理清单。",
+		message:        "检测到痕迹清理类删除/覆写命令；请核对目标主机、文件路径与 [投放] 事实后再确认执行",
+		timeoutEnabled: true,
+		timeoutSeconds: 3600,
+		timeoutAction:  "deny",
+		priority:       110,
+	},
+	{
+		name:      "[内置] 痕迹清理写删测试产物文件（Write/Edit）",
+		seedBatch: "v6",
+		target:    "tool_input",
+		typ:       "regex",
+		toolScope: []string{"Write", "Edit", "MultiEdit", "Delete", "delete_file", "file_delete", "remove_file"},
+		// JSON 入参里的 file_path/path 指向临时目录或 webshell 类文件名。
+		pattern:        `(?i)"(?:file_path|path|filename)"\s*:\s*"[^"]{0,300}(?:/tmp/|/var/tmp/|/dev/shm/|/uploads?/|(?:^|/)(?:webshell|backdoor|payload|beacon|shell|cmd|upload)[\w.-]*\.(?:php\d?|jspx?|aspx?|ashx|war|jar|py|pl|rb))"`,
+		action:         "ask",
+		class:          classAsk,
+		rationale:      "写/删临时目录或 webshell 类文件名可能是清理动作，也可能是业务文件覆盖；人工确认具体路径后才能执行。",
+		message:        "写/删操作命中测试产物路径；请核对目标主机、文件路径与 [投放] 事实后再确认执行",
+		timeoutEnabled: true,
+		timeoutSeconds: 3600,
+		timeoutAction:  "deny",
+		priority:       110,
+	},
+	{
+		name:           "[内置] 专用删除工具调用",
+		seedBatch:      "v6",
+		target:         "tool_name",
+		typ:            "regex",
+		pattern:        `^(?:Delete|delete_file|file_delete|remove_file|unlink_file)$`,
+		action:         "ask",
+		class:          classAsk,
+		rationale:      "专用删除工具没有上下文可研判，删除对象是否属于本次测试产物必须由人确认。",
+		message:        "检测到文件删除工具调用；请核对目标主机与文件路径后再确认执行",
+		timeoutEnabled: true,
+		timeoutSeconds: 3600,
+		timeoutAction:  "deny",
+		priority:       110,
 	},
 }
 

@@ -160,6 +160,9 @@ type FindingFilter struct {
 	// ExcludeStatuses 排除的状态集合（报告交付用：误报/重复/忽略/风险接受
 	// 不该原样进客户 Word——v0.3.93 A7）。与 Status 互斥使用；空 = 不排除。
 	ExcludeStatuses []string
+	// IncludeStatuses 只收录的状态集合（报告交付默认传 confirmed，可再配置
+	// resolved/fixed）。空 = 不按状态白名单过滤。
+	IncludeStatuses []string
 	// AssetScope 是资产树的节点 key(a:<id> / c:<id> / r:<domain> / __none__),
 	// 选中一个节点等于选中它的整棵子树。空 = 不按资产筛选。
 	AssetScope string
@@ -204,6 +207,23 @@ func (f FindingFilter) where() (string, []any) {
 		}
 		if len(ph) > 0 {
 			conds = append(conds, fmt.Sprintf("f.status NOT IN (%s)", strings.Join(ph, ",")))
+		}
+	}
+	// 交付白名单（Phase 5）：默认只收 confirmed，可配置加入 resolved/fixed。
+	// 未映射过的状态值不进白名单，避免非法输入悄悄放宽筛选。
+	if len(f.IncludeStatuses) > 0 {
+		ph := make([]string, 0, len(f.IncludeStatuses))
+		for _, st := range f.IncludeStatuses {
+			if !ValidFindingStatus(st) {
+				continue
+			}
+			args = append(args, st)
+			ph = append(ph, fmt.Sprintf("$%d", len(args)))
+		}
+		if len(ph) == 0 {
+			conds = append(conds, "FALSE")
+		} else {
+			conds = append(conds, fmt.Sprintf("f.status IN (%s)", strings.Join(ph, ",")))
 		}
 	}
 	// task_id 是 bigint 列,按整数比较(不能走上面的文本 add);空/非法值忽略。

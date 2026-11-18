@@ -27,6 +27,7 @@ func (s *Server) putReportSettings(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &st, maxMediumJSONBodyBytes) {
 		return
 	}
+	st.LogoPath = normalizeReportAssetPath(st.LogoPath)
 	if err := s.m.pg.SaveReportSettings(&st); err != nil {
 		writeErr(w, 500, err.Error())
 		return
@@ -45,9 +46,11 @@ func (s *Server) listReports(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) generateReportHandler(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		TaskID     string  `json:"task_id"`
-		FindingIDs []int64 `json:"finding_ids"`
-		Company    string  `json:"company"`
+		TaskID          string   `json:"task_id"`
+		FindingIDs      []int64  `json:"finding_ids"`
+		Company         string   `json:"company"`
+		TemplateID      int64    `json:"template_id"`
+		IncludeStatuses []string `json:"include_statuses"`
 	}
 	if !decodeJSON(w, r, &req, maxSmallJSONBodyBytes) {
 		return
@@ -57,13 +60,26 @@ func (s *Server) generateReportHandler(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, "task not found")
 		return
 	}
+	statuses := req.IncludeStatuses
+	for i := range statuses {
+		statuses[i] = strings.ToLower(strings.TrimSpace(statuses[i]))
+	}
+	profile, err := s.resolveReportProfile(req.TemplateID)
+	if err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	company := strings.TrimSpace(req.Company)
+	if company == "" && profile != nil {
+		company = profile.CompanyName
+	}
 	tid, _ := strconv.ParseInt(t.ID, 10, 64)
-	rec, err := s.m.pg.CreateReportRecord(&tid, firstLine(t.Description, 80), req.Company)
+	rec, err := s.m.pg.CreateReportRecord(&tid, firstLine(t.Description, 80), company)
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
 	}
-	go s.generateReport(rec.ID, t.ID, req.FindingIDs)
+	go s.generateReport(rec.ID, t.ID, req.FindingIDs, req.TemplateID, parseReportStatuses(strings.Join(statuses, ",")), company)
 	writeJSON(w, 202, map[string]any{"report_id": rec.ID, "status": rec.Status})
 }
 

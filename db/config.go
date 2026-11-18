@@ -507,6 +507,24 @@ func (d *DB) ListAgents() ([]*Agent, error) {
 	return out, rows.Err()
 }
 
+// GetAgentByExecutorKey 按 agents.executor_key 查已声明执行器的 Agent。
+// 用于 planner_controlled 门控与 spawn_task 的 pre_agent 校验。
+func (d *DB) GetAgentByExecutorKey(executorKey string) (*Agent, error) {
+	key := strings.TrimSpace(executorKey)
+	if key == "" {
+		return nil, nil
+	}
+	a, err := scanAgent(d.QueryRow(`SELECT `+agentCols+` FROM agents
+		WHERE executor_key=$1 OR key=$1 ORDER BY (executor_key=$1) DESC LIMIT 1`, key))
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return a, nil
+}
+
 func (d *DB) GetAgentByKey(key string) (*Agent, error) {
 	a, err := scanAgent(d.QueryRow(`SELECT `+agentCols+` FROM agents WHERE key=$1`, key))
 	if err == sql.ErrNoRows {
@@ -882,7 +900,7 @@ type MCPServer struct {
 	Env       json.RawMessage `json:"env"`
 	URL       string          `json:"url,omitempty"`
 	Enabled   bool            `json:"enabled"`
-	Insecure  bool            `json:"insecure"` // http: skip TLS cert verification (self-signed servers, issue #108)
+	Insecure  bool            `json:"insecure"`        // http: skip TLS cert verification (self-signed servers, issue #108)
 	Tools     []string        `json:"tools,omitempty"` // cached tool names (mcp_tools_cache)
 }
 

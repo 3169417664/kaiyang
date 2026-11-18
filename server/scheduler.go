@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/3169417664/kaiyang/agent"
 	"github.com/3169417664/kaiyang/db"
 )
 
@@ -172,8 +173,9 @@ func (sc *Scheduler) fireFindings(triggers []*db.AgentTrigger) {
 		if len(want) == 0 {
 			continue
 		}
-		msgCtx := fmt.Sprintf("\n\n【本次由任务发现 finding 触发】\n发现: [%s/%s] %s",
-			e.VulnClass, e.Severity, e.Summary)
+		mode := agent.ExecutionModeFromGoal(e.TaskGoal + "\n" + e.TaskDesc)
+		msgCtx := fmt.Sprintf("\n\n【本次由任务发现 finding 触发】\nexecution_mode: %s\n发现: [%s/%s] %s",
+			mode, e.VulnClass, e.Severity, e.Summary)
 		for _, tr := range want {
 			sc.s.StartTriggeredRun(tr.AgentKey, fmt.Sprintf("finding 触发 · task#%d", e.TaskID), tr.FindingMessage+msgCtx, e.TaskID, true, e.TaskDesc, e.TaskGoal)
 		}

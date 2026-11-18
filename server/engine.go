@@ -13,11 +13,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/Autumn-27/norma/harness"
-	"github.com/Autumn-27/norma/llm"
 	"github.com/3169417664/kaiyang/agent"
 	"github.com/3169417664/kaiyang/db"
 	"github.com/3169417664/kaiyang/intercept"
+	"github.com/Autumn-27/norma/harness"
+	"github.com/Autumn-27/norma/llm"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
@@ -109,7 +109,7 @@ type Engine struct {
 	debounce time.Duration
 
 	// customExecutor 由 Server 注入：执行一条已领取的自定义执行器意图。
-	customExecutor func(ctx context.Context, t *Task, intent *db.Node) error
+	customExecutor func(ctx context.Context, t *Task, executorKey string, intent *db.Node) error
 
 	bc *Broadcaster // live activity pub/sub (SSE)
 
@@ -906,8 +906,45 @@ func (e *Engine) ReadyFor(t *Task) bool {
 // but no-op until an LLM is configured (so a task created while idle picks up
 // automatically once LLM is set from the UI).
 // SetCustomExecutor 注入自定义执行器实现（Server 侧解析 Agent/Provider）。
-func (e *Engine) SetCustomExecutor(fn func(ctx context.Context, t *Task, intent *db.Node) error) {
+func (e *Engine) SetCustomExecutor(fn func(ctx context.Context, t *Task, executorKey string, intent *db.Node) error) {
 	e.customExecutor = fn
+}
+
+// RunApprovedExecutor 在人工审核批准后启动该意图指定的自定义执行器。
+// 没有 pre_agent 的任务同样适用：批准把 executor='review' 转正为 target_executor
+// （open + payload.executor=<agent key>），这里 CAS 领取并交给执行器跑完。
+func (e *Engine) RunApprovedExecutor(ctx context.Context, t *Task, executorKey string, intent *db.Node) error {
+	if e == nil || e.customExecutor == nil || t == nil || intent == nil {
+		return fmt.Errorf("自定义执行器未装配")
+	}
+	executorKey = strings.TrimSpace(executorKey)
+	if executorKey == "" || executorKey == "review" {
+		return fmt.Errorf("意图没有可执行的目标执行器")
+	}
+	if !e.beginTaskOperation(t.ID) {
+		return fmt.Errorf("任务正在删除")
+	}
+	defer e.decInflight(t.ID)
+	if e.IsPaused(t.ID) || e.IsDeleting(t.ID) || isTerminalStatus(t.lifecycleSnapshot().Status) {
+		return fmt.Errorf("任务已暂停/删除/结束，不能启动执行器")
+	}
+	ok, err := t.Store.ClaimExecutorIntent(intent.ID, executorKey, "exec:"+executorKey)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("意图 #%d 已被领取或状态不是 open", intent.ID)
+	}
+	intent.State = "running"
+	ectx := e.execContextFor(ctx, t.ID)
+	if ectx.Err() != nil {
+		_ = t.Store.FinishExecutorIntent(intent.ID, "blocked", "执行前任务上下文已取消")
+		return fmt.Errorf("任务上下文已取消")
+	}
+	runErr := e.customExecutor(ectx, t, executorKey, intent)
+	// 执行器结束后唤醒 planner 消费结果；done 时门控查询已放行。
+	t.Notify()
+	return runErr
 }
 
 func (e *Engine) Run(ctx context.Context, t *Task) {
@@ -1123,6 +1160,49 @@ func (e *Engine) warnFindingsWithoutReport(t *Task) {
 		Summary: fmt.Sprintf("收尾检查：%d 条漏洞缺少详细报告（%s…），可在漏洞页补齐后再导出", len(missing), strings.Join(missing, "、"))})
 }
 
+// shouldHoldPlannerForUncontrolledAgent 判断是否存在未完成且不受 Planner 控制的
+// custom intent（Agent 当前 planner_controlled=false）。查询失败时保守地抑制
+// 自动规划，避免异常时绕过 hold_until_done 契约。
+func (e *Engine) shouldHoldPlannerForUncontrolledAgent(t *Task) bool {
+	if t == nil || t.Store == nil {
+		return false
+	}
+	hold, err := t.Store.HasPendingUncontrolledCustomIntent()
+	if err != nil {
+		log.Printf("[engine] task %s 不受 Planner 控制门控查询失败，暂停自动规划: %v", t.ID, err)
+		return true
+	}
+	return hold
+}
+
+// executorKeyForIntent 从意图 payload 解析自定义执行器 key。
+// 空字符串表示：无 executor、JSON 解析失败、或 executor='review'（人工审核占位符）。
+func executorKeyForIntent(intent *db.Node) string {
+	if intent == nil {
+		return ""
+	}
+	var p map[string]any
+	if json.Unmarshal(intent.Payload, &p) != nil {
+		return ""
+	}
+	if ex, ok := p["executor"].(string); ok && ex != "review" {
+		return strings.TrimSpace(ex)
+	}
+	return ""
+}
+
+// isUncontrolledByPlanner 按 intent 的 executor_key 读取 Agent 当前配置。
+// false 只代表该 Agent 的 custom intent 不受 Planner 控制；Agent 缺失或查询
+// 失败时保持原有 Planner 行为。
+func (e *Engine) isUncontrolledByPlanner(intent *db.Node) bool {
+	executorKey := executorKeyForIntent(intent)
+	if executorKey == "" || e.m == nil || e.m.pg == nil {
+		return false
+	}
+	a, err := e.m.pg.GetAgentByExecutorKey(executorKey)
+	return err == nil && a != nil && !a.PlannerControlled
+}
+
 func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 	interval := plannerHeartbeatInterval(t)
 	// 心跳定时器在 loop 入口臂 = 从任务 start 计时:即使是跳过首轮 planner 的 seed 任务
@@ -1171,6 +1251,14 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 			return // user-paused: don't plan
 		}
 		if e.IsDeleting(t.ID) {
+			return
+		}
+		// 不受 Planner 控制的 custom intent 未完成时，edge/heartbeat 一律不进入
+		// Planner。该守卫位于 goalless 之前，避免种子/自定义首个意图被误判为
+		// 「已跑干」而提前收官；真实 done 或人工删除后查询自动放行。
+		if e.shouldHoldPlannerForUncontrolledAgent(t) {
+			t.drainTriggers()
+			log.Printf("[engine] task %s planner 规划轮抑制：存在未完成的免规划自定义 intent（%s）", t.ID, src)
 			return
 		}
 		// 有待审意图时 planner 不再派新单：审核是闸门，避免队列越积越多。
@@ -1766,7 +1854,11 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 		log.Printf("[worker %s] task %s 意图 #%d exhausted 零写回,已请求复盘 review", name, t.ID, intent.ID)
 	}
 	e.touch(t.ID)
-	t.NotifyDone(intent.ID) // results changed the graph -> wake the planner (with the just-finished intent id)
+	// 不受 Planner 控制的 custom intent：只有真实 done 才唤醒 Planner；
+	// exhausted/blocked/stopped 由人工处置或删除后解除门控，自动规划不抢跑。
+	if state == "done" || !e.isUncontrolledByPlanner(intent) {
+		t.NotifyDone(intent.ID) // results changed the graph -> wake the planner (with the just-finished intent id)
+	}
 	return true
 }
 
@@ -1916,7 +2008,7 @@ func (e *Engine) runPreAgentStage(ctx context.Context, t *Task) {
 		}
 		n.State = "running"
 		log.Printf("[executor] task %s 意图 #%d 交给 pre_agent=%s", t.ID, n.ID, key)
-		if err := e.customExecutor(ctx, t, n); err != nil {
+		if err := e.customExecutor(ctx, t, key, n); err != nil {
 			log.Printf("[executor] task %s 意图 #%d 执行失败: %v", t.ID, n.ID, err)
 		}
 	}
