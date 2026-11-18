@@ -12,7 +12,7 @@ jobs:
   frontend:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v5
         with:
           node-version: "22"
@@ -40,7 +40,7 @@ jobs:
           - { goos: darwin, goarch: amd64 }
           - { goos: darwin, goarch: arm64 }
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
         with:
           go-version: "1.26"
@@ -91,7 +91,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       # 这个 job 只拿到 dist/ 产物，没有工作区；install.sh 要从仓库取，所以必须 checkout。
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: actions/download-artifact@v4
         with:
           pattern: pkg-*
@@ -180,7 +180,7 @@ jobs:
     needs: [binaries, docker-cred-check]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5 # 取 Dockerfile 与 skills/
+      - uses: actions/checkout@v7 # 取 Dockerfile 与 skills/
       - uses: actions/download-artifact@v4
         with:
           name: bin-linux-amd64
