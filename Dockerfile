@@ -39,7 +39,7 @@ RUN if [ "$DEBIAN_MIRROR" != "deb.debian.org" ]; then \
 # Node 从 NodeSource 装 20.x：bookworm 自带的 apt nodejs 是 18，Playwright 要求 >=20。
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-         ca-certificates gosu ripgrep curl wget vim git jq unzip \
+         ca-certificates gosu libcap2-bin ripgrep curl wget vim git jq unzip \
          dnsutils iputils-ping netcat-openbsd inetutils-telnet whois nmap \
          imagemagick libreoffice-writer libreoffice-calc libreoffice-impress poppler-utils \
     && for pkg in masscan sqlmap hydra whatweb nikto ffuf john python3-impacket socat proxychains4; do \
@@ -122,7 +122,9 @@ RUN chmod +x /app/docker-entrypoint.sh
 RUN mkdir -p /app/data /app/nuclei-templates \
     && chown -R kaiyang:kaiyang /app \
     && chown root:root /app/kaiyang-hostd /app/docker-entrypoint.sh \
-    && chmod 0755 /app/kaiyang-hostd /app/docker-entrypoint.sh
+    && chmod 0755 /app/kaiyang-hostd /app/docker-entrypoint.sh \
+    && (setcap cap_net_raw,cap_net_admin+eip /usr/bin/nmap 2>/dev/null || true) \
+    && (setcap cap_net_raw,cap_net_admin+eip /usr/bin/masscan 2>/dev/null || true)
 # data/（PostgreSQL 之外的工作区、jwt.key、报告资产）持久化点
 VOLUME ["/app/data"]
 EXPOSE 8787 8788
