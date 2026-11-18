@@ -59,6 +59,9 @@ import type {
   ReportRecord,
   ReportSettings,
   FindingEnrichment,
+  KnowledgeDoc,
+  KnowledgeHit,
+  KnowledgeConfig,
   IntentAsset,
   InterceptApprovalFilter,
   InterceptApprovalRow,
@@ -1100,6 +1103,29 @@ export const api = {
     if (!r.ok) throw new Error(`report: ${r.status}`);
     return r.text();
   },
+  // ---- 知识库 ----
+  knowledgeDocs: (scope = "global", task?: string) => {
+    const q = new URLSearchParams({ scope });
+    if (task) q.set("task", task);
+    return get<KnowledgeDoc[]>(`/knowledge?${q.toString()}`);
+  },
+  createKnowledgeDoc: (input: { scope: string; task_id?: number; category: string; title: string; content: string }) =>
+    post<KnowledgeDoc>("/knowledge", input),
+  deleteKnowledgeDoc: (id: number) => del<{ ok: boolean }>(`/knowledge/${id}`),
+  uploadKnowledgeDoc: async (file: File, scope = "global", taskId = 0, category = "") => {
+    const fd = new FormData();
+    fd.append("file", file);
+    fd.append("scope", scope); fd.append("task_id", String(taskId)); fd.append("category", category);
+    const token = getToken();
+    const res = await fetch("/api/knowledge/upload", { method: "POST", body: fd, headers: token ? { Authorization: `Bearer ${token}` } : {} });
+    if (!res.ok) throw new Error(`upload: ${res.status}`);
+    return (await res.json()) as KnowledgeDoc;
+  },
+  searchKnowledge: (query: string, taskId = 0, topK = 5) =>
+    post<{ hits: KnowledgeHit[]; mode: string }>("/knowledge/search", { query, task_id: taskId, top_k: topK }),
+  knowledgeConfig: () => get<KnowledgeConfig>("/knowledge/config"),
+  saveKnowledgeConfig: (c: KnowledgeConfig) => put<{ ok: boolean }>("/knowledge/config", c),
+
   // ---- 交付报告（docx 管理）----
   reportSettings: () => get<ReportSettings>("/report-settings"),
   saveReportSettings: (s: ReportSettings) => put<{ ok: boolean }>("/report-settings", s),

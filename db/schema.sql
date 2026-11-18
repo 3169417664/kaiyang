@@ -1819,3 +1819,47 @@ CREATE TABLE IF NOT EXISTS report_templates (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- ── §FUSION-D  知识库（全局 + 任务双层）──────────────────────────────
+CREATE TABLE IF NOT EXISTS knowledge_docs (
+    id         BIGSERIAL PRIMARY KEY,
+    scope      TEXT   NOT NULL DEFAULT 'global',
+    task_id    BIGINT REFERENCES tasks(id) ON DELETE CASCADE,
+    category   TEXT   NOT NULL DEFAULT '',
+    title      TEXT   NOT NULL DEFAULT '',
+    content    TEXT   NOT NULL DEFAULT '',
+    source     TEXT   NOT NULL DEFAULT 'manual',
+    file_name  TEXT   NOT NULL DEFAULT '',
+    bytes      BIGINT NOT NULL DEFAULT 0,
+    indexed    BOOLEAN NOT NULL DEFAULT false,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_knowledge_docs_scope ON knowledge_docs(scope);
+CREATE INDEX IF NOT EXISTS idx_knowledge_docs_task ON knowledge_docs(task_id);
+CREATE INDEX IF NOT EXISTS idx_knowledge_docs_cat ON knowledge_docs(category);
+
+CREATE TABLE IF NOT EXISTS knowledge_retrieval_logs (
+    id         BIGSERIAL PRIMARY KEY,
+    task_id    BIGINT,
+    agent_key  TEXT   NOT NULL DEFAULT '',
+    query      TEXT   NOT NULL DEFAULT '',
+    scope      TEXT   NOT NULL DEFAULT '',
+    mode       TEXT   NOT NULL DEFAULT '',
+    top_k      INT    NOT NULL DEFAULT 0,
+    hits       INT    NOT NULL DEFAULT 0,
+    doc_ids    BIGINT[] NOT NULL DEFAULT '{}',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_knowledge_logs_created ON knowledge_retrieval_logs(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS knowledge_config (
+    id         INT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+    enabled    BOOLEAN NOT NULL DEFAULT false,
+    base_url   TEXT NOT NULL DEFAULT 'https://open.bigmodel.cn/api/paas/v4',
+    model      TEXT NOT NULL DEFAULT 'embedding-3',
+    api_key    TEXT NOT NULL DEFAULT '',
+    dim        INT  NOT NULL DEFAULT 1024,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+INSERT INTO knowledge_config (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
