@@ -18,7 +18,7 @@
 #       Docker   cd /opt/kaiyang && docker compose down -v && rm -rf /opt/kaiyang
 set -euo pipefail
 
-REPO="chu0119/Pojun"
+REPO="3169417664/kaiyang"
 INSTALL_DIR="/opt/kaiyang"
 SERVICE="kaiyang"
 RUN_USER="kaiyang"
