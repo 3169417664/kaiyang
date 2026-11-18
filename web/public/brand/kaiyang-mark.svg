@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="KAIYANG">
+  <polygon points="32,3 57,17 57,47 32,61 7,47 7,17" fill="#0B1B3A"/>
+  <path d="M25 13 L28 25 L40 28 L28 31 L25 43 L22 31 L10 28 L22 25 Z" fill="#2DD4BF"/>
+  <path d="M41 21 L43.5 30 L52 32.5 L43.5 35 L41 44 L38.5 35 L30 32.5 L38.5 30 Z" fill="#F59E0B" fill-opacity=".9"/>
+  <path d="M32 6 L35 30 L32 58 L29 30 Z" fill="#F8FAFC" fill-opacity=".92"/>
+</svg>
