@@ -80,6 +80,7 @@ func (s *Server) reviewListProposed(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]map[string]any, 0, len(ns))
 	for _, n := range ns {
+		s.maybePrescreen(t, n)
 		var p map[string]any
 		_ = json.Unmarshal(n.Payload, &p)
 		out = append(out, map[string]any{
