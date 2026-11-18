@@ -2126,3 +2126,15 @@ export interface TopologyData {
   groups: Array<{ id: number; name: string; color: string }>;
   notes: Array<{ id: number; content: string; x: number; y: number }>;
 }
+
+// ---- 内网凭据（KAIYANG Phase 7）----
+export interface IntranetCredential {
+  credential_id: number;
+  asset_id: number;
+  asset_name?: string;
+  cred_type: string;
+  username: string;
+  domain: string;
+  target: string;
+  relation: "discovered" | "verified" | string;
+}
