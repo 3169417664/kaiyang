@@ -5,6 +5,7 @@
 package server
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -17,11 +18,74 @@ import (
 	"github.com/3169417664/kaiyang/report"
 )
 
-// exportExcludeStatuses 交付件默认剔除的分拣状态。
-// false_positive/duplicate/ignored/risk_accepted 都是「不该出现在客户面前」的
-// 三态;pending/in_progress/confirmed/resolved/fixed 正常交付。
-var exportExcludeStatuses = []string{
-	db.FindingFalsePositive, db.FindingDuplicate, db.FindingIgnored, db.FindingRiskAccepted,
+// reportIncludeStatuses 交付件默认只收录已确认漏洞（Phase 5）。
+// 历史行为（剔除误报/重复/忽略/风险接受、其余全收）会把 pending/in_progress
+// 也带进客户报告；现在默认 confirmed，调用方可显式追加 resolved/fixed。
+var reportIncludeStatuses = []string{db.FindingConfirmed}
+
+// parseReportStatuses 解析 include_statuses 查询参数（逗号分隔）。
+// 空值 = 默认 confirmed；只接受合法状态值，非法值忽略。
+func parseReportStatuses(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return append([]string(nil), reportIncludeStatuses...)
+	}
+	out := make([]string, 0, 3)
+	seen := map[string]bool{}
+	for _, p := range strings.Split(raw, ",") {
+		st := strings.ToLower(strings.TrimSpace(p))
+		if st == "" || !db.ValidFindingStatus(st) || seen[st] {
+			continue
+		}
+		seen[st] = true
+		out = append(out, st)
+	}
+	if len(out) == 0 {
+		return append([]string(nil), reportIncludeStatuses...)
+	}
+	return out
+}
+
+// reportProfile 是一次报告生成所用的展示口径（模板优先，回退组织设置）。
+type reportProfile struct {
+	CompanyName   string
+	CompanyNameEn string
+	LogoPath      string
+	Personnel     json.RawMessage
+	CVSSVersion   string
+	Locale        string
+}
+
+// resolveReportProfile templateID>0 时读模板，否则读组织级 report_settings。
+func (s *Server) resolveReportProfile(templateID int64) (*reportProfile, error) {
+	if templateID > 0 {
+		t, err := s.m.pg.GetReportTemplate(templateID)
+		if err != nil {
+			return nil, err
+		}
+		if t == nil {
+			return nil, fmt.Errorf("报告模板 #%d 不存在", templateID)
+		}
+		return &reportProfile{
+			CompanyName: t.CompanyName, CompanyNameEn: t.CompanyNameEn, LogoPath: t.LogoPath,
+			Personnel: t.Personnel, CVSSVersion: t.CVSSVersion, Locale: t.Locale,
+		}, nil
+	}
+	st, err := s.m.pg.GetReportSettings()
+	if err != nil || st == nil {
+		return &reportProfile{Personnel: json.RawMessage(`[]`), CVSSVersion: "3.1", Locale: "zh-CN"}, err
+	}
+	return &reportProfile{
+		CompanyName: st.CompanyName, CompanyNameEn: st.CompanyNameEn, LogoPath: st.LogoPath,
+		Personnel: st.Personnel, CVSSVersion: firstNonEmpty(st.CVSSVersion, "3.1"), Locale: "zh-CN",
+	}, nil
+}
+
+func firstNonEmpty(v, def string) string {
+	if strings.TrimSpace(v) == "" {
+		return def
+	}
+	return v
 }
 
 // reportAssetNames 批量解析资产 id → 可读名（域名/IP/URL，A8）。
@@ -108,10 +172,16 @@ func (s *Server) exportTaskDocx(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, "no active task")
 		return
 	}
-	findings, err := s.m.pg.ListFindingsForExport(db.FindingFilter{TaskID: t.ID, ExcludeStatuses: exportExcludeStatuses}, nil)
+	statuses := parseReportStatuses(r.URL.Query().Get("include_statuses"))
+	findings, err := s.m.pg.ListFindingsForExport(db.FindingFilter{TaskID: t.ID, IncludeStatuses: statuses}, nil)
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
+	}
+	profile, _ := s.resolveReportProfile(parseInt64Default(r.URL.Query().Get("template_id"), 0))
+	customer := s.taskCustomerNames(t)
+	if profile != nil && strings.TrimSpace(profile.CompanyName) != "" {
+		customer = profile.CompanyName
 	}
 	counts := map[string]int{}
 	appendix := map[string][]string{}
@@ -139,11 +209,12 @@ func (s *Server) exportTaskDocx(w http.ResponseWriter, r *http.Request) {
 		Goals:          report.GoalLines(goals),
 		AssetNames:     s.reportAssetNames(findings),
 		Retests:        s.reportRetests(findings),
-		Customer:       s.taskCustomerNames(t),
+		Customer:       customer,
 		TestWindow:     taskTestWindow(t),
 		AppendixAssets: appendix,
 		PageHeader:     fmt.Sprintf("渗透测试报告 — %s", t.Description),
 		ArtifactImage:  s.artifactImageResolver(t.ID, 0),
+		Logo:           s.profileLogo(profile),
 	})
 	name := fmt.Sprintf("pojun-report-task%s-%s.docx", t.ID, time.Now().Format("20060102"))
 	w.Header().Set("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
@@ -279,6 +350,10 @@ func (s *Server) exportFindingDocx(w http.ResponseWriter, r *http.Request) {
 			classification = "内部资料 · 仅限授权方"
 		}
 	}
+	profile, _ := s.resolveReportProfile(parseInt64Default(r.URL.Query().Get("template_id"), 0))
+	if profile != nil && strings.TrimSpace(profile.CompanyName) != "" {
+		customer = profile.CompanyName
+	}
 	doc := report.BuildFindingDocx(report.FindingDocxInput{
 		Finding:        f,
 		GeneratedAt:    time.Now(),
@@ -286,6 +361,7 @@ func (s *Server) exportFindingDocx(w http.ResponseWriter, r *http.Request) {
 		Retests:        retests,
 		Customer:       customer,
 		Classification: classification,
+		Logo:           s.profileLogo(profile),
 		ArtifactImage: func() func(int64) ([]byte, string, bool) {
 			if f.TaskID == nil || *f.TaskID <= 0 {
 				return nil
@@ -300,4 +376,20 @@ func (s *Server) exportFindingDocx(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Disposition", attachmentDisposition(name))
 	w.WriteHeader(200)
 	_ = doc.Encode(w)
+}
+
+// profileLogo 取模板/组织设置里的 Logo 字节；未配置/不可读返回 nil。
+func (s *Server) profileLogo(p *reportProfile) []byte {
+	if p == nil {
+		return nil
+	}
+	return s.readReportLogo(p.LogoPath)
+}
+
+func parseInt64Default(s string, def int64) int64 {
+	v, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
+	if err != nil || v <= 0 {
+		return def
+	}
+	return v
 }

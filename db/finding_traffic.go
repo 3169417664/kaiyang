@@ -349,6 +349,20 @@ type RecordFindingInput struct {
 	// 的这条重复记录插入推送事件（客户反馈：跨任务重复漏洞「一直播报」）。漏洞本身
 	// 照常入库——各任务的发现记录相互独立，只是不重复打扰。
 	CrossTaskNotifyDedup bool
+	// Reproduction 是可选的复现结构（entry_point/prerequisites/steps/provenance），
+	// 直接写入 findings.reproduction；nil/空 = 不改动已有值。门槛与去重逻辑不变。
+	Reproduction json.RawMessage
+}
+
+func validReproductionJSON(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var probe map[string]any
+	if err := json.Unmarshal(raw, &probe); err != nil || len(probe) == 0 {
+		return ""
+	}
+	return string(raw)
 }
 
 type RecordedFinding struct {
@@ -386,10 +400,10 @@ var findingBrackets = regexp.MustCompile(`[（(【\[][^）)】\]]*[）)】\]]`)
 // 没有资产锚定时，旧指纹退化为「类别|名称」，不同端点/参数的同类漏洞会被合并；
 // 有了定位键就能区分，同时仍把「同一漏洞换证据再报一次」合并掉。
 var (
-	findingCVERe  = regexp.MustCompile(`(?i)\bCVE-\d{4}-\d{4,}\b`)
+	findingCVERe = regexp.MustCompile(`(?i)\bCVE-\d{4}-\d{4,}\b`)
 	// 排除字符同时覆盖半角与全角标点。此前未排除全角左括号（U+FF08），
 	// 「http://host（说明文字」会被整段吞进 URL，导致解析失败并产生垃圾键。
-	findingURLRe = regexp.MustCompile(`(?i)https?://[^\s"'<>（）()【】\[\]，,。；;]+`)
+	findingURLRe  = regexp.MustCompile(`(?i)https?://[^\s"'<>（）()【】\[\]，,。；;]+`)
 	findingPathRe = regexp.MustCompile(`(/[a-zA-Z0-9_\-./]{3,})`)
 	findingPortRe = regexp.MustCompile(`(?i)(?:端口|port)\s*[:=]?\s*(\d{1,5})`)
 )
@@ -519,8 +533,9 @@ VALUES($1,'finding',$2,9,'confirmed',$3) RETURNING id`, in.ExplorationID, string
 	}
 	raw, _ := json.Marshal(assets)
 	rootKey := normalizeRootCauseKey(in.RootCauseKey)
-	if err := tx.QueryRow(`INSERT INTO findings(task_id,node_id,vulnclass,name,severity,summary,evidence,worker,asset_ids,fingerprint,root_cause_key)
-VALUES(NULLIF($1,0),$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`, in.TaskID, out.NodeID, in.VulnClass, in.Name, in.Severity, in.Summary, in.Evidence, in.Worker, string(raw), fp, rootKey).Scan(&out.FindingID); err != nil {
+	repro := validReproductionJSON(in.Reproduction)
+	if err := tx.QueryRow(`INSERT INTO findings(task_id,node_id,vulnclass,name,severity,summary,evidence,worker,asset_ids,fingerprint,root_cause_key,reproduction)
+VALUES(NULLIF($1,0),$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,COALESCE(NULLIF($12,''),'{}')::jsonb) RETURNING id`, in.TaskID, out.NodeID, in.VulnClass, in.Name, in.Severity, in.Summary, in.Evidence, in.Worker, string(raw), fp, rootKey, repro).Scan(&out.FindingID); err != nil {
 		return nil, err
 	}
 	if err := insertFindingKeysTx(tx, out.FindingID, keys); err != nil {

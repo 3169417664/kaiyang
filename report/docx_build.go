@@ -42,6 +42,10 @@ type TaskDocxInput struct {
 	// ArtifactImage 证据附件图片解析器（v0.5.0）：Markdown 里
 	// ![说明](artifact:<id>) 会内嵌为图片；nil = 降级为文字说明。
 	ArtifactImage func(id int64) (data []byte, caption string, ok bool)
+	// Logo 是封面 Logo 图片字节（png/jpeg/gif）；空 = 封面不嵌 Logo。
+	Logo []byte
+	// TrafficBody 读取已绑定流量证据的请求/响应正文（已截断）；nil = 只输出头部。
+	TrafficBody func(findingID, bindingID int64, side string) (string, bool)
 }
 
 func sevRankKey(f *db.DBFinding) int {
@@ -73,7 +77,10 @@ func BuildTaskDocx(in TaskDocxInput) *Docx {
 	}
 
 	// ── 封面页（A3）：居中大标题 + 元信息，替代原来的首行 H1 ──
-	for i := 0; i < 6; i++ {
+	if len(in.Logo) > 0 {
+		d.CoverImage(in.Logo) // 封面 Logo（Phase 5 报告模板）
+	}
+	for i := 0; i < 4; i++ {
 		d.CoverLine("", 0, false) // 垂直下压
 	}
 	d.CoverLine(in.Title, 52, true)
@@ -480,6 +487,8 @@ type FindingDocxInput struct {
 	Retests        []*db.FindingRetest
 	Customer       string // 委托方（空 = 省略该行）
 	Classification string // 密级占位（空 = 默认「内部资料 · 仅限授权方」）
+	// Logo 是封面 Logo 图片字节（png/jpeg/gif）；空 = 封面不嵌 Logo。
+	Logo []byte
 }
 
 // BuildFindingDocx 渲染单漏洞报告(复现步骤/证据/修复建议的自包含文档)。
@@ -494,7 +503,10 @@ func BuildFindingDocx(in FindingDocxInput) *Docx {
 	d.SetHeaderText("渗透测试报告 — " + findingTitle(f))
 
 	// 封面页（与总报告同版式）
-	for i := 0; i < 6; i++ {
+	if len(in.Logo) > 0 {
+		d.CoverImage(in.Logo)
+	}
+	for i := 0; i < 4; i++ {
 		d.CoverLine("", 0, false)
 	}
 	if hex := SeverityHex(f.Severity); hex != "" {
