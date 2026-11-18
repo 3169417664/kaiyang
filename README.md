@@ -20,6 +20,16 @@
 
 > 来源与许可：本项目基于 Pojun 0.4.82（ARTEX 0.3.15 血脉）缝合 artex-ld 与 AntiFox 的增强能力。完整归属见 [NOTICE](NOTICE)，许可证为 AGPL-3.0。
 
+## KAIYANG 相对 Pojun 的新增
+
+- **多用户 RBAC**：admin / operator / viewer，账号 + 路由级权限、审计、强制改密、登录锁定。
+- **任务轨迹**：全 agent 合并时间线、minimap、步骤详情抽屉。
+- **意图审核 + 场景模板**：proposed 待审、人工批准/驳回、6 个场景分类、planner/worker 模板库。
+- **自定义执行器 + Finding 编排**：executor_key / pre_agent、dispatch_finding_to_agent、内网派发去重、trace_cleaner。
+- **报告交付**：中文 docx、报告管理、漏洞富化、结构化复现、截图/流量证据。
+- **知识库**：全局 + 任务双层 RAG，pgvector 或关键词降级。
+- **资产凭据 + 内网拓扑**：discovered/verified 关系、内网凭据 API、任务拓扑。
+
 ---
 
 ## 快速开始
@@ -31,13 +41,13 @@
 **Linux（Debian / Ubuntu / RHEL / Kali 等，root 执行，全自动交互安装）：**
 
 ```bash
-curl -fsSL https://github.com/chu0119/Pojun/releases/latest/download/install.sh | sudo bash
+curl -fsSL https://github.com/3169417664/kaiyang/releases/latest/download/install.sh | sudo bash
 ```
 
 **macOS 13+（Apple Silicon / Intel，一条命令，不需要 sudo）：**
 
 ```bash
-curl -fsSL https://github.com/chu0119/Pojun/releases/latest/download/install.sh | bash
+curl -fsSL https://github.com/3169417664/kaiyang/releases/latest/download/install.sh | bash
 ```
 
 自动完成：Homebrew 检测（没有就装）→ PostgreSQL 16 安装与服务化 → 下载并
@@ -48,7 +58,7 @@ curl -fsSL https://github.com/chu0119/Pojun/releases/latest/download/install.sh 
 **Windows / 已有 Docker（工具链全在镜像里，宿主机零安装）：**
 
 ```bash
-git clone --depth 1 https://github.com/chu0119/Pojun.git pojun && cd pojun
+git clone --depth 1 https://github.com/3169417664/kaiyang.git kaiyang && cd kaiyang
 cp .env.example .env    # Windows 用 copy；至少改 POSTGRES_PASSWORD
 # Windows（Docker Desktop，WSL2 后端）：
 docker compose -f docker-compose.yml -f docker-compose.windows.yml up -d
@@ -83,7 +93,7 @@ docker compose up -d
 
 ## 这是什么
 
-Pojun 是一套 **LLM 多 Agent 自主渗透测试平台**：给一句话目标，它自动完成
+KAIYANG 是在 Pojun 基础上缝合 artex-ld 与 AntiFox 的一体化平台；它是一套 **LLM 多 Agent 自主渗透测试平台**：给一句话目标，它自动完成
 「目标拆解 → 侦察 → 漏洞挖掘 → 利用 → 后渗透 → 报告」全流程，人随时可以插手纠偏。
 
 它不是一个「包一层 API 的扫描器」。Pojun 的核心设计是**让 AI 像一个守纪律的渗透测试工程师一样干活**：
@@ -374,7 +384,7 @@ flowchart TB
 在**全新 Linux 服务器**（Debian/Ubuntu/CentOS/RHEL/Kali 等）上以 root 执行：
 
 ```bash
-curl -fsSL https://github.com/chu0119/Pojun/releases/latest/download/install.sh | sudo bash
+curl -fsSL https://github.com/3169417664/kaiyang/releases/latest/download/install.sh | sudo bash
 ```
 
 脚本会交互式问你（直接回车用默认值）：
@@ -389,7 +399,7 @@ curl -fsSL https://github.com/chu0119/Pojun/releases/latest/download/install.sh 
 
 ```bash
 # 全默认（二进制、直连）
-curl -fsSL https://github.com/chu0119/Pojun/releases/latest/download/install.sh | sudo bash -s -- -y
+curl -fsSL https://github.com/3169417664/kaiyang/releases/latest/download/install.sh | sudo bash -s -- -y
 # 带代理 + 顺装常用渗透工具
 curl -fsSL .../install.sh | sudo bash -s -- --install-proxy=http://10.0.0.14:7897 --with-tools
 # Docker 形态
@@ -404,7 +414,7 @@ curl -fsSL .../install.sh | sudo bash -s -- --mode=docker
 已经会用 Docker 的话，不需要 install.sh：
 
 ```bash
-git clone --depth 1 https://github.com/chu0119/Pojun.git pojun && cd pojun
+git clone --depth 1 https://github.com/3169417664/kaiyang.git kaiyang && cd kaiyang
 cp .env.example .env      # 至少改 POSTGRES_PASSWORD；POJUN_TAG 可钉到具体版本（如 v0.4.64）
 docker compose up -d      # → http://localhost:8787
 ```
