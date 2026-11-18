@@ -4,6 +4,20 @@
 
 ## [Unreleased]
 
+### 新增（KAIYANG Phase 2：轨迹与可观测性）
+
+- **任务轨迹 Tab**：`GET /api/exploration/activity/history?session=all` 合并任务下
+  全部 agent 的活动流；前端新增合并时间线、minimap 密度导航、步骤详情抽屉，
+  按 agent/步骤类型筛选，SSE 实时追加。
+- **工具配对按 worker 作用域**：合并多 agent 时间线时，`tool_use_id` 以
+  `worker + id` 配对，避免跨 worker 错配；`Transcript` 支持强制显示执行者 chip。
+- **访问日志中间件**：记录 4xx/5xx 与 >2s 慢请求，注入请求 ID；兼容 SSE `Flush`。
+- **xlog 四级日志**：`KAIYANG_LOG_LEVEL` / `POJUN_LOG_LEVEL` / `ARTEX_LOG_LEVEL`
+  兼容，支持 debug/info/warn/error 阈值。
+- **请求体限长**：认证与 RBAC 端点改用 `decodeJSON`，超大请求返回 413。
+- **工作区敏感文件保护**：`jwt.key`、`.env`、`config.json`、`*.pem/*.key` 等
+  禁止通过工作区读取/下载。
+
 ### 新增（KAIYANG Phase 1：多用户底座）
 
 - **多用户 RBAC**：新增 `rbac_users/roles/permissions/role_permissions/user_roles`，

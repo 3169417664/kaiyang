@@ -96,8 +96,7 @@ func (s *Server) rbacCreateUser(w http.ResponseWriter, r *http.Request) {
 		Enabled     *bool    `json:"enabled"`
 		RoleIDs     []string `json:"role_ids"`
 	}
-	if err := decode(r, &req); err != nil {
-		writeErr(w, 400, "参数无效")
+	if !decodeJSON(w, r, &req, maxSmallJSONBodyBytes) {
 		return
 	}
 	username := strings.ToLower(strings.TrimSpace(req.Username))
@@ -148,8 +147,7 @@ func (s *Server) rbacUpdateUser(w http.ResponseWriter, r *http.Request) {
 		RoleIDs     *[]string `json:"role_ids"`
 		Password    string    `json:"password"`
 	}
-	if err := decode(r, &req); err != nil {
-		writeErr(w, 400, "参数无效")
+	if !decodeJSON(w, r, &req, maxSmallJSONBodyBytes) {
 		return
 	}
 	if err := pg.UpdateRBACUser(id, req.DisplayName, req.Enabled, req.RoleIDs); err != nil {
