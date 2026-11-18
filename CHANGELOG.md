@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+### 新增（KAIYANG Phase 6：知识库）
+
+- **双层 RAG**：全局知识库 + 任务级知识库；文档分块、embedding、pgvector 语义检索。
+- **自动降级**：启动检测 pgvector 扩展与 embedder 配置；缺失时走关键词检索，不阻断启动。
+- **文档管理**：文本新增、文件上传（md/txt/csv/json/docx/pdf）、分类、索引状态、删除。
+- **Agent 工具**：`search_knowledge`、`list_knowledge_categories`，注册进 planner/worker/main。
+- **前端**：`/system/knowledge` 管理页，支持检索预览与 embedder 配置。
+
 ### 新增（KAIYANG Phase 5：报告交付）
 
 - **中文 docx 交付报告**：封面、目录、概述、漏洞明细、复现步骤、证据截图、流量证据、修复建议；

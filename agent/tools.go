@@ -15,6 +15,7 @@ import (
 	actool "github.com/Autumn-27/norma/tool"
 	"github.com/3169417664/kaiyang/db"
 	"github.com/3169417664/kaiyang/hosttools"
+	"github.com/3169417664/kaiyang/knowledge"
 )
 
 // compactIntents distills intents to {id, summary, state, asset_ids, parents,
@@ -100,6 +101,8 @@ type ToolSet struct {
 	reviewEnabledFn func() bool
 	// executorKey 非空时当前 ToolSet 属于自定义执行器，可领取匹配意图。
 	executorKey string
+	// kb 是知识库服务（nil=未启用）。
+	kb *knowledge.Service
 	as              *db.AssetStore   // asset store (optional; nil = asset tools not available)
 	cs     *db.CompanyStore // company store (optional)
 	ts     *db.ExplorationStore
@@ -2977,6 +2980,7 @@ func (t *ToolSet) PlannerTools() []actool.CoreTool {
 		t.getWorkerOutput(), t.getWorkerTrace(), t.searchAllWorkerTraces(), t.listGoals(), t.addIntent(), t.retireIntent(), t.proveGoal(), t.goalMet(),
 		// 审核：送审 / 查询 / 修订 / 取消（审核开启时 add_intent 会被硬拒绝）。
 		t.addReviewIntent(), t.listIntentsTool(), t.updateIntentTool(), t.cancelIntentTool(),
+		t.searchKnowledge(), t.listKnowledgeCategories(),
 		t.killWorkTool(), t.steerWorkTool(),
 		// report_finding：规划态势研判时若自身已确证漏洞，可直接登记（与 worker 同工具）。
 		t.addFinding(),

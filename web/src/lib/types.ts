@@ -2069,3 +2069,37 @@ export interface FindingEnrichment {
   source: string;
   updated_at?: string;
 }
+
+// ---- 知识库（KAIYANG Phase 6）----
+export interface KnowledgeDoc {
+  id: number;
+  scope: "global" | "task" | string;
+  task_id?: number;
+  category: string;
+  title: string;
+  content?: string;
+  source: string;
+  file_name?: string;
+  bytes?: number;
+  indexed?: boolean;
+  created_at: string;
+  updated_at?: string;
+}
+
+export interface KnowledgeHit {
+  doc_id?: number;
+  title?: string;
+  category?: string;
+  scope?: string;
+  content: string;
+  score: number;
+}
+
+export interface KnowledgeConfig {
+  enabled: boolean;
+  base_url: string;
+  model: string;
+  api_key?: string;
+  has_key?: boolean;
+  dim: number;
+}
