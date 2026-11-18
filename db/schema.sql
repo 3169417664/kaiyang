@@ -1758,8 +1758,6 @@ CREATE INDEX IF NOT EXISTS idx_task_dispatch_targets_task ON task_dispatch_targe
 
 -- ── §FUSION-C  报告 / 漏洞富化 / 复现 ───────────────────────────────────
 ALTER TABLE findings ADD COLUMN IF NOT EXISTS reproduction JSONB NOT NULL DEFAULT '{}'::jsonb;
-ALTER TABLE task_artifacts ADD COLUMN IF NOT EXISTS step_index INT NOT NULL DEFAULT 0;
-ALTER TABLE task_artifacts ADD COLUMN IF NOT EXISTS sort_order INT NOT NULL DEFAULT 0;
 
 CREATE TABLE IF NOT EXISTS finding_enrichment (
     finding_id    BIGINT PRIMARY KEY REFERENCES findings(id) ON DELETE CASCADE,

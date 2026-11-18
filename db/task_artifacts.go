@@ -54,6 +54,8 @@ ALTER TABLE task_artifacts ADD COLUMN IF NOT EXISTS preview_state TEXT;
 ALTER TABLE task_artifacts ADD COLUMN IF NOT EXISTS preview_pages INT NOT NULL DEFAULT 0;
 ALTER TABLE task_artifacts ADD COLUMN IF NOT EXISTS preview_error TEXT;
 ALTER TABLE task_artifacts ADD COLUMN IF NOT EXISTS previewed_at TIMESTAMPTZ;
+ALTER TABLE task_artifacts ADD COLUMN IF NOT EXISTS step_index INT NOT NULL DEFAULT 0;
+ALTER TABLE task_artifacts ADD COLUMN IF NOT EXISTS sort_order INT NOT NULL DEFAULT 0;
 `)
 	return err
 }
