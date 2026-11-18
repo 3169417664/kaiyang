@@ -15,6 +15,8 @@ import type { KnowledgeConfig, KnowledgeDoc, KnowledgeHit } from "@/lib/types";
 
 export default function KnowledgePage() {
   const [docs, setDocs] = React.useState<KnowledgeDoc[]>([]);
+  const [scope, setScope] = React.useState<"global" | "task">("global");
+  const [taskId, setTaskId] = React.useState("");
   const [category, setCategory] = React.useState("");
   const [title, setTitle] = React.useState("");
   const [content, setContent] = React.useState("");
@@ -27,17 +29,17 @@ export default function KnowledgePage() {
 
   const load = React.useCallback(async () => {
     try {
-      const [ds, c] = await Promise.all([api.knowledgeDocs("global"), api.knowledgeConfig()]);
+      const [ds, c] = await Promise.all([api.knowledgeDocs(scope, taskId.trim() || undefined), api.knowledgeConfig()]);
       setDocs(ds); setCfg(c);
     } catch (e) { toast.error((e as Error).message || "加载知识库失败"); }
-  }, []);
+  }, [scope, taskId]);
   React.useEffect(() => { void load(); }, [load]);
 
   async function addText() {
     if (!title.trim() || !content.trim()) { toast.error("标题和正文必填"); return; }
     setBusy(true);
     try {
-      await api.createKnowledgeDoc({ scope: "global", category: category.trim(), title: title.trim(), content });
+      await api.createKnowledgeDoc({ scope, task_id: scope === "task" ? Number(taskId) : undefined, category: category.trim(), title: title.trim(), content });
       toast.success("已添加"); setTitle(""); setContent(""); await load();
     } catch (e) { toast.error((e as Error).message || "添加失败"); } finally { setBusy(false); }
   }
@@ -47,7 +49,7 @@ export default function KnowledgePage() {
     if (!f) { toast.error("请选择文件"); return; }
     setBusy(true);
     try {
-      await api.uploadKnowledgeDoc(f, "global", 0, category.trim());
+      await api.uploadKnowledgeDoc(f, scope, scope === "task" ? Number(taskId) : 0, category.trim());
       toast.success("已上传并索引"); if (fileRef.current) fileRef.current.value = ""; await load();
     } catch (e) { toast.error((e as Error).message || "上传失败"); } finally { setBusy(false); }
   }
@@ -73,13 +75,20 @@ export default function KnowledgePage() {
           <h1 className="font-semibold text-xl">知识库</h1>
           <p className="mt-1 text-muted-foreground text-sm">全局 + 任务双层 RAG；pgvector/embedder 缺失时自动降级关键词检索。</p>
         </div>
-        <Button variant="outline" onClick={load}><RefreshCwIcon className="size-4" /> 刷新</Button>
+        <div className="flex items-end gap-2">
+          <select className="h-9 rounded-md border bg-background px-3 text-sm" value={scope} onChange={(e) => setScope(e.target.value as "global" | "task")}>
+            <option value="global">全局知识库</option>
+            <option value="task">任务知识库</option>
+          </select>
+          {scope === "task" && <Input className="w-36" value={taskId} onChange={(e) => setTaskId(e.target.value.replace(/[^0-9]/g, ""))} placeholder="任务 ID" />}
+          <Button variant="outline" onClick={load}><RefreshCwIcon className="size-4" /> 刷新</Button>
+        </div>
       </div>
 
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>
           <CardHeader>
-            <CardTitle>新增全局知识</CardTitle>
+            <CardTitle>{scope === "global" ? "新增全局知识" : "新增任务知识"}</CardTitle>
             <CardDescription>漏洞库、方法论、检查项、客户背景资料等。</CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
@@ -135,7 +144,7 @@ export default function KnowledgePage() {
       </Card>
 
       <Card>
-        <CardHeader><CardTitle>全局文档</CardTitle><CardDescription>共 {docs.length} 篇。</CardDescription></CardHeader>
+        <CardHeader><CardTitle>{scope === "global" ? "全局文档" : `任务 #${taskId || "?"} 文档`}</CardTitle><CardDescription>共 {docs.length} 篇。</CardDescription></CardHeader>
         <CardContent className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead className="border-b text-muted-foreground"><tr className="text-left">
