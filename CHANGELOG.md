@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-18
+
+### 首版（KAIYANG 缝合版）
+
+- 以 Pojun 0.4.82 为主干，缝合 artex-ld 的审核/模板/执行器/凭据/拓扑/轨迹与 AntiFox 的报告/富化/RBAC/知识库。
+- 完成 Phase 1–8：多用户 RBAC、轨迹与日志、审核与场景模板、自定义执行器与 Finding 编排、中文 docx 报告、双层知识库、资产凭据与内网拓扑、发布文档。
+- 详细能力与已知缺口见 README 与 docs/stitch/implementation-status.md。
+
 ### 新增（KAIYANG Phase 7：资产凭据 + 内网拓扑）
 
 - **资产凭据模型**：`asset_credentials` + `asset_credential_links`（discovered/verified），
