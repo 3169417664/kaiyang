@@ -30,7 +30,7 @@ jobs:
     env:
       POJUN_PG_DSN: postgres://kaiyang:pojuntest@localhost:5432/kaiyang_test?sslmode=disable
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
@@ -48,7 +48,7 @@ jobs:
   frontend:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v5
         with:
           node-version: "22"
