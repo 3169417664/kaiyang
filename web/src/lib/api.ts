@@ -334,6 +334,31 @@ export const api = {
     return get<{ logs: AuditLog[]; total: number }>(`/audit/logs${s ? `?${s}` : ""}`);
   },
 
+  // ---- review ----
+  reviewProposed: (taskId: string) =>
+    get<{ intents: Array<{ id: number; summary?: string; priority?: number; pending_executor?: string; review_note?: string; content_version: number; created_at: number }> }>(
+      `/tasks/${encodeURIComponent(taskId)}/review/proposed`,
+    ).then((r) => r.intents ?? []),
+  reviewApprove: (taskId: string, intentId: number, version?: number) =>
+    post<{ ok: boolean }>(`/tasks/${encodeURIComponent(taskId)}/review/${intentId}/approve`, version == null ? {} : { expected_version: version }),
+  reviewReject: (taskId: string, intentId: number, version?: number, note = "") =>
+    post<{ ok: boolean }>(`/tasks/${encodeURIComponent(taskId)}/review/${intentId}/reject`, { expected_version: version, note }),
+  reviewConfig: (taskId: string, enabled: boolean, auto: boolean) =>
+    put<{ ok: boolean; enabled: boolean; auto: boolean }>(`/tasks/${encodeURIComponent(taskId)}/review/config`, { enabled, auto }),
+
+  // ---- prompt templates ----
+  promptTemplates: (kind: "planner" | "worker") =>
+    get<{ templates: Array<{ id: number; name: string; nkey: string; body: string; builtin: boolean; is_default: boolean }> }>(
+      `/${kind}-templates`,
+    ).then((r) => r.templates ?? []),
+  createPromptTemplate: (kind: "planner" | "worker", input: { name: string; nkey: string; body: string }) =>
+    post<{ template: unknown }>(`/${kind}-templates`, input),
+  updatePromptTemplate: (kind: "planner" | "worker", id: number, input: { name: string; body: string }) =>
+    put<{ ok: boolean }>(`/${kind}-templates/${id}`, input),
+  deletePromptTemplate: (kind: "planner" | "worker", id: number) => del<{ ok: boolean }>(`/${kind}-templates/${id}`),
+  setDefaultPromptTemplate: (kind: "planner" | "worker", id: number) =>
+    post<{ ok: boolean }>(`/${kind}-templates/${id}/default`, {}),
+
   // ---- tasks ----
   tasks: () =>
     get<{ tasks: Task[]; active: string }>("/tasks").then((r) => ({ tasks: arr(r.tasks), active: r.active ?? "" })),
@@ -352,6 +377,15 @@ export const api = {
     coverageEnabled?: boolean;
     interceptRules?: AssetInterceptRuleInput[];
     authConfig?: TaskAuthConfigInput;
+    reviewEnabled?: boolean;
+    reviewAuto?: boolean;
+    workerCount?: number;
+    assetMode?: string;
+    preAgent?: string;
+    plannerTemplateId?: number;
+    workerTemplateId?: number;
+    plannerPrompt?: string;
+    workerPrompt?: string;
   }) =>
     post<Task>("/tasks", {
       name: input.name ?? "",
@@ -368,6 +402,15 @@ export const api = {
       intercept_rules: input.interceptRules ?? [], // 任务级资产拦截规则
       // 任务级登录凭据（v0.4.8）：密码/TOTP 只进 DB，API 永不回传。
       auth_config: input.authConfig?.enabled ? input.authConfig : undefined,
+      review_enabled: input.reviewEnabled,
+      review_auto: input.reviewAuto,
+      worker_count: input.workerCount,
+      asset_mode: input.assetMode,
+      pre_agent: input.preAgent,
+      planner_template_id: input.plannerTemplateId,
+      worker_template_id: input.workerTemplateId,
+      planner_prompt: input.plannerPrompt,
+      worker_prompt: input.workerPrompt,
     }),
   taskCategories: () => get<{ categories: TaskCategory[] }>("/task-categories").then((r) => arr(r.categories)),
   updateTask: (id: string, input: { name?: string; pinned?: boolean }) => patch<Task>(`/tasks/${id}`, input),

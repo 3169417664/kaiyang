@@ -136,3 +136,8 @@ func BuiltinPromptSeeds() map[string]string {
 		"pentest":   pentestDefaultTmpl,
 	}
 }
+
+// PlannerDefaultTemplateBody / WorkerDefaultTemplateBody 供服务端把内置默认正文
+// 播种进模板库（模板库默认行与内置默认同源，后续用户可编辑）。
+func PlannerDefaultTemplateBody() string { return plannerDefaultTmpl }
+func WorkerDefaultTemplateBody() string  { return workerDefaultTmpl }

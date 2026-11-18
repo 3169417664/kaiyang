@@ -4,6 +4,20 @@
 
 ## [Unreleased]
 
+### 新增（KAIYANG Phase 3：审核 + 场景模板）
+
+- **意图审核状态机**：`proposed` 待审态、`review_status`、`content_version` CAS；
+  审核开启时 `add_intent` 硬拒绝，必须用 `add_review_intent` 送审。
+- **人工审核闭环**：待审列表 / 批准 / 驳回；批准后转 open 并唤醒 planner；
+  驳回保留 proposed，planner 可用 `update_intent` 修订后自动重送审。
+- **审核工具**：`add_review_intent`、`list_intents`、`update_intent`、`cancel_intent`。
+- **任务级审核开关**：`PUT /api/tasks/{id}/review/config`；任务详情新增「审核」Tab。
+- **场景模板**：6 个场景分类（外网/内网/权限提升/漏洞利用/漏洞挖掘/代码审计），
+  内网/提权/漏洞利用默认开审；planner/worker 模板库 + 四级提示词链
+  （任务快照 > 全局覆盖 > 模板默认 > 内置默认），保留 Pojun 红队硬尾。
+- **模板管理页**：`/system/templates`，支持新建/编辑/设默认/删除（内置不可删）。
+- **建任务字段**：审核开关、自动处置、任务级 worker 数、资产模式，分类预设自动带出。
+
 ### 新增（KAIYANG Phase 2：轨迹与可观测性）
 
 - **任务轨迹 Tab**：`GET /api/exploration/activity/history?session=all` 合并任务下

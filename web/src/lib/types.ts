@@ -42,12 +42,28 @@ export interface Task {
   coverage_enabled?: boolean; // 资产覆盖度功能开关(创建时定,默认开)；false=不计算/不展示覆盖度
   // 任务级登录凭据（脱敏视图；未配置为省略）
   auth_config?: TaskAuthConfigView;
+  // KAIYANG 审核 / 场景模板
+  review_enabled?: boolean;
+  review_auto?: boolean;
+  worker_count?: number;
+  asset_mode?: string;
+  pre_agent?: string;
+  planner_prompt_override?: string;
+  worker_prompt_override?: string;
+  created_by?: string;
 }
 
 export interface TaskCategory {
   id: number;
   name: string;
   task_count: number;
+  default_review_enabled?: boolean;
+  default_planner_template_id?: number;
+  default_worker_template_id?: number;
+  default_description?: string;
+  asset_mode?: string;
+  seed_first_intent?: boolean;
+  seed_executor?: string;
   created_at: string;
   updated_at: string;
 }

@@ -96,7 +96,9 @@ type ToolSet struct {
 	// runDir 是本次运行的专属工作目录（worker 在这里产生截图/样本），
 	// save_evidence 的相对路径基准；由 Worker.Execute 注入。
 	runDir string
-	as     *db.AssetStore   // asset store (optional; nil = asset tools not available)
+	// reviewEnabledFn 返回当前任务是否开启意图审核；add_intent 在开启时硬拒绝。
+	reviewEnabledFn func() bool
+	as              *db.AssetStore   // asset store (optional; nil = asset tools not available)
 	cs     *db.CompanyStore // company store (optional)
 	ts     *db.ExplorationStore
 	worker string
@@ -232,6 +234,10 @@ func NewToolSet(ts *db.ExplorationStore, worker string) *ToolSet {
 // SetTaskID sets the PG task id on this ToolSet so that report_finding can
 // dual-write to the standalone findings table (which survives task deletion).
 func (t *ToolSet) SetTaskID(id int64) { t.taskID = id }
+
+// SetReviewEnabled 注入当前任务是否开启意图审核（每轮读取，设置改动即时生效）。
+func (t *ToolSet) SetReviewEnabled(fn func() bool) { t.reviewEnabledFn = fn }
+
 
 // SetArtifactRecorder 注入证据附件存储（host 实现）。
 func (t *ToolSet) SetArtifactRecorder(r ArtifactRecorder) { t.artifactRecorder = r }
@@ -1511,6 +1517,9 @@ func (t *ToolSet) addIntent() actool.CoreTool {
 			"success_criteria": str("【建议填】怎么算成了/没成：期望拿到的 fact/finding 形态（如「拿到 admin cookie 的请求响应」/「证实参数 X 不可注入的输出」）。"),
 		}),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+			if t.reviewEnabledFn != nil && t.reviewEnabledFn() {
+				return actool.Errorf("该任务已开启意图审核，add_intent 直投不可用；请改用 add_review_intent 送审"), nil
+			}
 			var a struct {
 				Intents    []intentItem `json:"intents"`
 				intentItem              // 单条模式：顶层 summary/asset_ids/parent_ids/priority
@@ -2961,6 +2970,8 @@ func (t *ToolSet) PlannerTools() []actool.CoreTool {
 		// cold-digest §6.1: restore folded cold nodes (digest body → members → detail).
 		t.expandDigest(),
 		t.getWorkerOutput(), t.getWorkerTrace(), t.searchAllWorkerTraces(), t.listGoals(), t.addIntent(), t.retireIntent(), t.proveGoal(), t.goalMet(),
+		// 审核：送审 / 查询 / 修订 / 取消（审核开启时 add_intent 会被硬拒绝）。
+		t.addReviewIntent(), t.listIntentsTool(), t.updateIntentTool(), t.cancelIntentTool(),
 		t.killWorkTool(), t.steerWorkTool(),
 		// report_finding：规划态势研判时若自身已确证漏洞，可直接登记（与 worker 同工具）。
 		t.addFinding(),

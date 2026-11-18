@@ -280,3 +280,42 @@ GROUP BY category.id`, *categoryID))
 	}
 	return updated, category, nil
 }
+
+// TaskCategoryPreset 是场景分类携带的建任务默认值。
+type TaskCategoryPreset struct {
+	ReviewEnabled       bool
+	PlannerTemplateID   int64
+	WorkerTemplateID    int64
+	DefaultDescription  string
+	AssetMode           string
+	SeedFirstIntent     bool
+	SeedExecutor        string
+}
+
+func (d *DB) GetTaskCategoryPreset(id int64) (*TaskCategoryPreset, error) {
+	var p TaskCategoryPreset
+	err := d.QueryRow(`SELECT default_review_enabled,
+		COALESCE(default_planner_template_id,0), COALESCE(default_worker_template_id,0),
+		COALESCE(default_description,''), COALESCE(asset_mode,'pentest'),
+		COALESCE(seed_first_intent,false), COALESCE(seed_executor,'')
+		FROM task_categories WHERE id=$1`, id).
+		Scan(&p.ReviewEnabled, &p.PlannerTemplateID, &p.WorkerTemplateID, &p.DefaultDescription, &p.AssetMode, &p.SeedFirstIntent, &p.SeedExecutor)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &p, nil
+}
+
+// SeedTaskCategoryPreset 幂等播种场景分类；同名/同 nkey 已存在时不覆盖用户修改。
+func (d *DB) SeedTaskCategoryPreset(name string, review bool) error {
+	name, nkey, err := normalizeTaskCategoryName(name)
+	if err != nil {
+		return err
+	}
+	_, err = d.Exec(`INSERT INTO task_categories(name,nkey,default_review_enabled)
+		VALUES ($1,$2,$3) ON CONFLICT (nkey) DO NOTHING`, name, nkey, review)
+	return err
+}
