@@ -146,7 +146,7 @@ jobs:
             echo "完整逐版本历史见 [CHANGELOG.md](https://github.com/3169417664/kaiyang/blob/main/CHANGELOG.md)。"
           } > /tmp/release-notes.md
           head -30 /tmp/release-notes.md
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           files: |
             dist/*.zip
