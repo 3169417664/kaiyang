@@ -28,16 +28,15 @@ const (
 	pxToEMU           int64 = 9525      // 96dpi
 )
 
-// Image 嵌入一张图片并输出「居中图片段落 + 居中图注段落」。
-// 只接受 Go 标准库能解析尺寸的格式（png/jpeg/gif），失败返回 false 由调用方
-// 决定是否降级为文字说明（不因一张坏图让整份报告失败）。
-func (d *Docx) Image(data []byte, caption string) bool {
+// addImageData 解码并登记一张图片，按 maxW/maxH 等比缩放（EMU）。
+// 只接受 Go 标准库能解析尺寸的格式（png/jpeg/gif），失败返回 false。
+func (d *Docx) addImageData(data []byte, maxW, maxH int64) (docxImage, bool) {
 	if len(data) == 0 {
-		return false
+		return docxImage{}, false
 	}
 	cfg, format, err := image.DecodeConfig(bytes.NewReader(data))
 	if err != nil || cfg.Width <= 0 || cfg.Height <= 0 {
-		return false
+		return docxImage{}, false
 	}
 	ext := "png"
 	switch format {
@@ -48,22 +47,25 @@ func (d *Docx) Image(data []byte, caption string) bool {
 	}
 	w := int64(cfg.Width) * pxToEMU
 	h := int64(cfg.Height) * pxToEMU
-	if w > maxImageWidthEMU {
-		h = h * maxImageWidthEMU / w
-		w = maxImageWidthEMU
+	if w > maxW {
+		h = h * maxW / w
+		w = maxW
 	}
-	if h > maxImageHeightEMU {
-		w = w * maxImageHeightEMU / h
-		h = maxImageHeightEMU
+	if h > maxH {
+		w = w * maxH / h
+		h = maxH
 	}
 	n := len(d.images) + 1
 	img := docxImage{
 		rid: fmt.Sprintf("rIdImg%d", n), name: fmt.Sprintf("image%d.%s", n, ext),
-		data: data, cx: w, cy: h, caption: caption, seq: n,
+		data: data, cx: w, cy: h, seq: n,
 	}
 	d.images = append(d.images, img)
+	return img, true
+}
 
-	// 图片段落：居中、清首行缩进、行距 auto（exact 会裁图）。
+// inlineImageParagraph 输出居中的内联图片段落（清首行缩进、auto 行距）。
+func (d *Docx) inlineImageParagraph(img docxImage, descr string) {
 	fmt.Fprintf(&d.buf,
 		`<w:p><w:pPr><w:spacing w:before="120" w:after="60" w:line="240" w:lineRule="auto"/><w:ind w:firstLine="0"/><w:jc w:val="center"/></w:pPr>`+
 			`<w:r><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0">`+
@@ -74,13 +76,41 @@ func (d *Docx) Image(data []byte, caption string) bool {
 			`<pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="%d" cy="%d"/></a:xfrm>`+
 			`<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic>`+
 			`</a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>`,
-		img.cx, img.cy, img.seq, img.seq, esc(caption), img.seq, esc(img.name), img.rid, img.cx, img.cy)
+		img.cx, img.cy, img.seq, img.seq, esc(descr), img.seq, esc(img.name), img.rid, img.cx, img.cy)
+}
+
+// Image 嵌入一张图片并输出「居中图片段落 + 居中图注段落」。
+// 只接受 Go 标准库能解析尺寸的格式（png/jpeg/gif），失败返回 false 由调用方
+// 决定是否降级为文字说明（不因一张坏图让整份报告失败）。
+func (d *Docx) Image(data []byte, caption string) bool {
+	img, ok := d.addImageData(data, maxImageWidthEMU, maxImageHeightEMU)
+	if !ok {
+		return false
+	}
+	img.caption = caption
+	// seq 在 append 时已定；回填 caption 只影响结构体副本，无需回写切片。
+	d.inlineImageParagraph(img, caption)
 	if caption != "" {
 		// 图注：居中、10.5pt（五号）、28 磅行距。
 		fmt.Fprintf(&d.buf,
 			`<w:p><w:pPr><w:spacing w:before="0" w:after="120" w:line="560" w:lineRule="exact"/><w:ind w:firstLine="0"/><w:jc w:val="center"/></w:pPr>`+
 				`<w:r><w:rPr><w:sz w:val="21"/><w:szCs w:val="21"/></w:rPr><w:t xml:space="preserve">图 %d：%s</w:t></w:r></w:p>`,
-			n, esc(caption))
+			img.seq, esc(caption))
 	}
+	return true
+}
+
+// CoverImage 在封面嵌入一张 Logo：居中、无图注、宽度上限明显小于正文插图
+// （≈70mm），避免压掉封面标题版面。失败返回 false 由调用方忽略。
+func (d *Docx) CoverImage(data []byte) bool {
+	const (
+		coverMaxWidthEMU  int64 = 2_600_000 // ≈70.9mm
+		coverMaxHeightEMU int64 = 1_400_000 // ≈38.1mm
+	)
+	img, ok := d.addImageData(data, coverMaxWidthEMU, coverMaxHeightEMU)
+	if !ok {
+		return false
+	}
+	d.inlineImageParagraph(img, "Logo")
 	return true
 }
