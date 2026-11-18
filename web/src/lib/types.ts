@@ -2029,3 +2029,100 @@ export interface AuditLog {
   message: string;
   detail: Record<string, unknown>;
 }
+
+// ---- 交付报告 / 漏洞富化（KAIYANG Phase 5）----
+export interface ReportSettings {
+  company_name: string;
+  company_name_en: string;
+  logo_path: string;
+  personnel: Array<{ name: string; role: string; contact?: string }>;
+  cvss_version: string;
+}
+
+export interface ReportRecord {
+  id: number;
+  task_id?: number;
+  task_desc: string;
+  filename: string;
+  size: number;
+  company: string;
+  status: "queued" | "running" | "done" | "failed" | string;
+  error?: string;
+  created_at: string;
+}
+
+export interface FindingEnrichment {
+  finding_id: number;
+  node_id?: number;
+  name: string;
+  target: string;
+  module: string;
+  severity: string;
+  status: string;
+  cvss_score: number;
+  cvss_vector: string;
+  cvss_metrics: Record<string, unknown>;
+  description: string[];
+  test_process: Array<Record<string, unknown>>;
+  risk_analysis: string[];
+  remediation: string[];
+  source: string;
+  updated_at?: string;
+}
+
+// ---- 知识库（KAIYANG Phase 6）----
+export interface KnowledgeDoc {
+  id: number;
+  scope: "global" | "task" | string;
+  task_id?: number;
+  category: string;
+  title: string;
+  content?: string;
+  source: string;
+  file_name?: string;
+  bytes?: number;
+  indexed?: boolean;
+  created_at: string;
+  updated_at?: string;
+}
+
+export interface KnowledgeHit {
+  doc_id?: number;
+  title?: string;
+  category?: string;
+  scope?: string;
+  content: string;
+  score: number;
+}
+
+export interface KnowledgeConfig {
+  enabled: boolean;
+  base_url: string;
+  model: string;
+  api_key?: string;
+  has_key?: boolean;
+  dim: number;
+}
+
+// ---- 内网拓扑（KAIYANG Phase 7）----
+export interface TopologyNode {
+  ip: string;
+  hostname: string;
+  display_label: string;
+  group_id?: number;
+  x: number;
+  y: number;
+  notes: string;
+}
+export interface TopologyEdge {
+  id: number;
+  src_ip: string;
+  dst_ip: string;
+  label: string;
+}
+export interface TopologyData {
+  nodes: TopologyNode[];
+  edges: TopologyEdge[];
+  groups: Array<{ id: number; name: string; color: string }>;
+  notes: Array<{ id: number; content: string; x: number; y: number }>;
+}

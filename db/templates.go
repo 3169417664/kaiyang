@@ -80,7 +80,7 @@ func (d *DB) DefaultPromptTemplateBody(kind string) string {
 		return ""
 	}
 	var body string
-	if err := d.QueryRow(`SELECT body FROM `+table+` WHERE is_default ORDER BY id LIMIT 1`).Scan(&body); err != nil {
+	if err := d.QueryRow(`SELECT body FROM ` + table + ` WHERE is_default ORDER BY id LIMIT 1`).Scan(&body); err != nil {
 		return ""
 	}
 	return body
@@ -158,7 +158,7 @@ func (d *DB) SetDefaultPromptTemplate(kind string, id int64) error {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.Exec(`UPDATE `+table+` SET is_default=false`); err != nil {
+	if _, err := tx.Exec(`UPDATE ` + table + ` SET is_default=false`); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(`UPDATE `+table+` SET is_default=true, updated_at=now() WHERE id=$1`, id); err != nil {

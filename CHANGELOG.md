@@ -4,6 +4,32 @@
 
 ## [Unreleased]
 
+### 新增（KAIYANG Phase 7：资产凭据 + 内网拓扑）
+
+- **资产凭据模型**：`asset_credentials` + `asset_credential_links`（discovered/verified），
+  存量 `assets.auth` 一次性迁移；`record_credential` / `mark_credential_verified` 工具；
+  `GET /api/credentials/intranet`（secret 不下发）。
+- **内网拓扑**：任务内节点/边/分组/便签表与 API；任务详情新增「拓扑」Tab（节点管理）。
+
+### 新增（KAIYANG Phase 6：知识库）
+
+- **双层 RAG**：全局知识库 + 任务级知识库；文档分块、embedding、pgvector 语义检索。
+- **自动降级**：启动检测 pgvector 扩展与 embedder 配置；缺失时走关键词检索，不阻断启动。
+- **文档管理**：文本新增、文件上传（md/txt/csv/json/docx/pdf）、分类、索引状态、删除。
+- **Agent 工具**：`search_knowledge`、`list_knowledge_categories`，注册进 planner/worker/main。
+- **前端**：`/system/knowledge` 管理页，支持检索预览与 embedder 配置。
+
+### 新增（KAIYANG Phase 5：报告交付）
+
+- **中文 docx 交付报告**：封面、目录、概述、漏洞明细、复现步骤、证据截图、流量证据、修复建议；
+  使用 Pojun 手写 OOXML，不引入 python-docx。
+- **报告管理**：`report_settings` 组织设置、`reports` 记录、异步生成/状态/下载/删除；
+  文件落 `keyDir/report_assets/reports`，不在可浏览工作区。
+- **漏洞富化**：`finding_enrichment(finding_id)`，名称/目标/CVSS/描述/复现/风险/修复；
+  新增 `GET/PUT /api/findings/{id}/enrichment`。
+- **结构化复现**：`findings.reproduction` + `PUT /api/findings/{id}/reproduction`。
+- **前端**：`/system/reports` 报告管理页；任务详情「报告」Tab 新增「生成交付报告」按钮。
+
 ### 新增（KAIYANG Phase 4：自定义执行器 + Finding 编排）
 
 - **自定义执行器**：`agents.executor_key` / `planner_controlled`；`tasks.pre_agent` 种子意图

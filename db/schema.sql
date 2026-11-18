@@ -1755,3 +1755,170 @@ CREATE TABLE IF NOT EXISTS task_dispatch_targets (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_task_dispatch_targets_task ON task_dispatch_targets(task_id);
+
+-- ── §FUSION-C  报告 / 漏洞富化 / 复现 ───────────────────────────────────
+ALTER TABLE findings ADD COLUMN IF NOT EXISTS reproduction JSONB NOT NULL DEFAULT '{}'::jsonb;
+
+CREATE TABLE IF NOT EXISTS finding_enrichment (
+    finding_id    BIGINT PRIMARY KEY REFERENCES findings(id) ON DELETE CASCADE,
+    node_id       BIGINT,
+    name          TEXT NOT NULL DEFAULT '',
+    target        TEXT NOT NULL DEFAULT '',
+    module        TEXT NOT NULL DEFAULT '',
+    severity      TEXT NOT NULL DEFAULT '',
+    status        TEXT NOT NULL DEFAULT 'open',
+    cvss_score    DOUBLE PRECISION NOT NULL DEFAULT 0,
+    cvss_vector   TEXT NOT NULL DEFAULT '',
+    cvss_metrics  JSONB NOT NULL DEFAULT '{}'::jsonb,
+    description   JSONB NOT NULL DEFAULT '[]'::jsonb,
+    test_process  JSONB NOT NULL DEFAULT '[]'::jsonb,
+    risk_analysis JSONB NOT NULL DEFAULT '[]'::jsonb,
+    remediation   JSONB NOT NULL DEFAULT '[]'::jsonb,
+    source        TEXT NOT NULL DEFAULT 'manual',
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_finding_enrichment_status ON finding_enrichment(status);
+
+CREATE TABLE IF NOT EXISTS report_settings (
+    id              INT PRIMARY KEY DEFAULT 1,
+    company_name    TEXT NOT NULL DEFAULT '',
+    company_name_en TEXT NOT NULL DEFAULT '',
+    logo_path       TEXT NOT NULL DEFAULT '',
+    personnel_json  JSONB NOT NULL DEFAULT '[]'::jsonb,
+    cvss_version    TEXT NOT NULL DEFAULT '3.1',
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT report_settings_singleton CHECK (id = 1)
+);
+
+CREATE TABLE IF NOT EXISTS reports (
+    id         BIGSERIAL PRIMARY KEY,
+    task_id    BIGINT,
+    task_desc  TEXT NOT NULL DEFAULT '',
+    filename   TEXT NOT NULL DEFAULT '',
+    path       TEXT NOT NULL DEFAULT '',
+    size       BIGINT NOT NULL DEFAULT 0,
+    company    TEXT NOT NULL DEFAULT '',
+    status     TEXT NOT NULL DEFAULT 'queued',
+    error      TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    started_at TIMESTAMPTZ,
+    finished_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_reports_created ON reports(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS report_templates (
+    id              BIGSERIAL PRIMARY KEY,
+    name            TEXT NOT NULL DEFAULT '',
+    company_name    TEXT NOT NULL DEFAULT '',
+    company_name_en TEXT NOT NULL DEFAULT '',
+    logo_path       TEXT NOT NULL DEFAULT '',
+    personnel_json  JSONB NOT NULL DEFAULT '[]'::jsonb,
+    cvss_version    TEXT NOT NULL DEFAULT '3.1',
+    locale          TEXT NOT NULL DEFAULT 'zh-CN',
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- ── §FUSION-D  知识库（全局 + 任务双层）──────────────────────────────
+CREATE TABLE IF NOT EXISTS knowledge_docs (
+    id         BIGSERIAL PRIMARY KEY,
+    scope      TEXT   NOT NULL DEFAULT 'global',
+    task_id    BIGINT REFERENCES tasks(id) ON DELETE CASCADE,
+    category   TEXT   NOT NULL DEFAULT '',
+    title      TEXT   NOT NULL DEFAULT '',
+    content    TEXT   NOT NULL DEFAULT '',
+    source     TEXT   NOT NULL DEFAULT 'manual',
+    file_name  TEXT   NOT NULL DEFAULT '',
+    bytes      BIGINT NOT NULL DEFAULT 0,
+    indexed    BOOLEAN NOT NULL DEFAULT false,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_knowledge_docs_scope ON knowledge_docs(scope);
+CREATE INDEX IF NOT EXISTS idx_knowledge_docs_task ON knowledge_docs(task_id);
+CREATE INDEX IF NOT EXISTS idx_knowledge_docs_cat ON knowledge_docs(category);
+
+CREATE TABLE IF NOT EXISTS knowledge_retrieval_logs (
+    id         BIGSERIAL PRIMARY KEY,
+    task_id    BIGINT,
+    agent_key  TEXT   NOT NULL DEFAULT '',
+    query      TEXT   NOT NULL DEFAULT '',
+    scope      TEXT   NOT NULL DEFAULT '',
+    mode       TEXT   NOT NULL DEFAULT '',
+    top_k      INT    NOT NULL DEFAULT 0,
+    hits       INT    NOT NULL DEFAULT 0,
+    doc_ids    BIGINT[] NOT NULL DEFAULT '{}',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_knowledge_logs_created ON knowledge_retrieval_logs(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS knowledge_config (
+    id         INT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+    enabled    BOOLEAN NOT NULL DEFAULT false,
+    base_url   TEXT NOT NULL DEFAULT 'https://open.bigmodel.cn/api/paas/v4',
+    model      TEXT NOT NULL DEFAULT 'embedding-3',
+    api_key    TEXT NOT NULL DEFAULT '',
+    dim        INT  NOT NULL DEFAULT 1024,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+INSERT INTO knowledge_config (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
+
+-- ── §FUSION-E  资产凭据 / 内网拓扑 ──────────────────────────────────────
+CREATE TABLE IF NOT EXISTS asset_credentials (
+    id         BIGSERIAL PRIMARY KEY,
+    cred_type  TEXT NOT NULL DEFAULT 'unknown',
+    username   TEXT NOT NULL DEFAULT '',
+    domain     TEXT NOT NULL DEFAULT '',
+    secret     TEXT NOT NULL DEFAULT '',
+    extra      JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (cred_type, username, domain, secret)
+);
+CREATE TABLE IF NOT EXISTS asset_credential_links (
+    credential_id BIGINT NOT NULL REFERENCES asset_credentials(id) ON DELETE CASCADE,
+    asset_id      BIGINT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+    relation      TEXT NOT NULL CHECK (relation IN ('discovered','verified')),
+    target        TEXT NOT NULL DEFAULT '',
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (credential_id, asset_id, relation)
+);
+CREATE INDEX IF NOT EXISTS idx_asset_credential_links_asset ON asset_credential_links(asset_id);
+
+CREATE TABLE IF NOT EXISTS task_topology_groups (
+    id BIGSERIAL PRIMARY KEY,
+    task_id BIGINT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    name TEXT NOT NULL DEFAULT '',
+    color TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS task_topology_nodes (
+    task_id BIGINT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    ip TEXT NOT NULL,
+    hostname TEXT NOT NULL DEFAULT '',
+    display_label TEXT NOT NULL DEFAULT '',
+    group_id BIGINT REFERENCES task_topology_groups(id) ON DELETE SET NULL,
+    x DOUBLE PRECISION NOT NULL DEFAULT 0,
+    y DOUBLE PRECISION NOT NULL DEFAULT 0,
+    notes TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (task_id, ip)
+);
+CREATE TABLE IF NOT EXISTS task_topology_edges (
+    id BIGSERIAL PRIMARY KEY,
+    task_id BIGINT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    src_ip TEXT NOT NULL,
+    dst_ip TEXT NOT NULL,
+    label TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS task_topology_notes (
+    id BIGSERIAL PRIMARY KEY,
+    task_id BIGINT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    content TEXT NOT NULL DEFAULT '',
+    x DOUBLE PRECISION NOT NULL DEFAULT 0,
+    y DOUBLE PRECISION NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);

@@ -712,6 +712,8 @@ func (t *ToolSet) WorkerTools() []actool.CoreTool {
 		// list_findings 保留：报漏洞前先查本任务已确认漏洞，避免重复上报同一漏洞。
 		t.listFindings(),
 		t.addFinding(), t.recordFact(),
+		t.searchKnowledge(), t.listKnowledgeCategories(),
+		t.recordCredential(), t.markCredentialVerified(),
 		// asset management (handlers guard nil store internally)。
 		// add_company_scope 不给 worker：定义企业资产范围属规划/主控/Auto 的职责，worker 只执行探索。
 		t.insertAssets(), t.listAssets(),
@@ -777,6 +779,8 @@ func (t *ToolSet) MainAgentTools() []actool.CoreTool {
 		t.listWorkerTraces(),
 		t.getWorkerOutput(), t.getWorkerTrace(), t.searchAllWorkerTraces(), t.addHint(), t.addIntent(),
 		t.addReviewIntent(), t.listIntentsTool(), t.updateIntentTool(), t.cancelIntentTool(),
+		t.searchKnowledge(), t.listKnowledgeCategories(),
+		t.recordCredential(), t.markCredentialVerified(),
 		// steer_work：人可对某条正在运行的意图(work)实时注入纠偏指令（不打断、不丢进展）。
 		t.steerWorkTool(),
 		// set_goals：人可在运行时给本任务补一个新的最终目标（规划者据此重判是否达成）。
