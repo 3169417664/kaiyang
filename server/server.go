@@ -175,6 +175,7 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		provByProfile:  map[int64]*provEntry{}, llmHealth: newLLMHealthRegistry(m.pg),
 		taskAgents: map[string]*taskAgentBundle{}, archiveWake: make(chan struct{}, 1)}
 	s.jwtKey.Store(key)
+	s.engine.SetCustomExecutor(s.runCustomExecutor)
 	s.bootstrapRBAC()
 	s.seedFusion()
 	// 模板库默认正文作为提示词四级链的第③级（任务快照 > 全局覆盖 > 模板默认 > 内置）。
@@ -260,12 +261,14 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		wireTools(m.pg, domainReg) // 内置工具表：按 agent 过滤 + 覆盖描述/schema + 注入默认值
 		seedPrompts(m.pg)          // 内置 agent 默认提示词正文播种进 agent_prompts(仅空时)
 		s.seedOrchestrationTools() // P2 跨任务编排工具 seed 进 tools 表(可按 agent 绑定)
+		s.seedFusionAgents()       // 预置 trace_cleaner / vuln_dispatcher（工具已 seed）
 		if err := s.seedFindingRetester(); err != nil {
 			log.Printf("[retester] seed: %v", err)
 		}
 		go s.evidenceStore().RunGC(s.ctx)
 		go s.recoverPendingPreviews()     // 文档预览：恢复上次未完成的队列（v0.4.23）
 		go s.recoverEmptyFindingReports() // 空报告巡检：重启/崩溃后补写被中断的报告（v0.4.63）
+		go s.findingInvocationRetryLoop() // Finding 派发补发（每 10 分钟）
 		s.seedPythonInterpreter()         // 自定义脚本工具:开机检测 python 解释器入库(仅空时)
 		go newScheduler(s).Run(s.ctx)     // P3 触发器调度(定时/finding/目标事件),仅自定义 agent
 		// 漏洞 IM 推送投递引擎。与 Scheduler 并列但独立：推送的实时性要求(3s)
@@ -1980,6 +1983,23 @@ func (s *Server) seed(t *Task, text string) {
 // origin fact (RelDerivedFrom) so it still traces back to a fact node. Best-effort —
 // a failure just falls back to the normal planner-driven flow.
 func (s *Server) seedFirstIntent(t *Task) {
+	// pre_agent：种子意图不直接投给 worker，而是以 proposed + executor=<key> 落库，
+	// 由自定义执行器阶段领取；默认 worker 的 Frontier 会跳过它。
+	if key := strings.TrimSpace(t.PreAgent); key != "" {
+		id, err := t.Store.AddNode("intent", map[string]any{
+			"summary":  fmt.Sprintf("完成任务目标：%s", t.Goal),
+			"executor": key,
+		}, 8, "proposed", "seed", nil)
+		if err != nil {
+			log.Printf("[seed] task %s: 下发 pre_agent 种子失败: %v", t.ID, err)
+			return
+		}
+		if origin, _ := t.Store.OriginFactID(); origin > 0 {
+			_ = t.Store.Link(origin, db.RelDerivedFrom, id)
+		}
+		log.Printf("[seed] task %s: 已下发 pre_agent 种子意图 #%d（执行器 %s）", t.ID, id, key)
+		return
+	}
 	// v0.4.46：种子意图只适用于简单任务——描述+目标合计 ≤200 字符时才下发。
 	// 复杂任务（如渗透测试全流程描述动辄上千字）让 planner 拆解成 3-5 条具体
 	// 意图，不生成「做整个任务」的种子——否则 worker 收到等于收到整个任务。

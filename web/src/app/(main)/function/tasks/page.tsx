@@ -3294,6 +3294,7 @@ function CreateTaskSheet({
   const [reviewAuto, setReviewAuto] = React.useState(false);
   const [workerCount, setWorkerCount] = React.useState(""); // 0/空=跟随全局
   const [assetMode, setAssetMode] = React.useState(""); // 空=跟随分类/默认 pentest
+  const [preAgent, setPreAgent] = React.useState(""); // 前置自定义执行器 executor_key
   const [interceptRules, setInterceptRules] = React.useState<AssetInterceptRuleInput[]>([]); // 任务级资产拦截规则(仅本任务生效,不进全局表)
   // 任务级目标登录凭据（v0.4.8）：worker 先登录再测；密码/TOTP 只进 DB，不回显。
   const [authCfg, setAuthCfg] = React.useState<TaskAuthConfigInput>({
@@ -3379,6 +3380,7 @@ function CreateTaskSheet({
         reviewAuto,
         workerCount: workerCount.trim() === "" ? undefined : Number(workerCount),
         assetMode: assetMode || undefined,
+        preAgent: preAgent.trim() || undefined,
         interceptRules: interceptRules
           .map((r) => ({ ...r, pattern: r.pattern.trim() }))
           .filter((r) => r.pattern !== ""),
@@ -3736,6 +3738,18 @@ function CreateTaskSheet({
                     placeholder="留空=跟随全局；1–16"
                     inputMode="numeric"
                   />
+                </div>
+                <div className="grid gap-2">
+                  <label htmlFor="pre-agent" className="text-sm">前置执行器（pre_agent，可选）</label>
+                  <Input
+                    id="pre-agent"
+                    value={preAgent}
+                    onChange={(e) => setPreAgent(e.target.value)}
+                    placeholder="自定义 Agent 的 executor_key，如 recon_scout"
+                  />
+                  <p className="text-muted-foreground text-xs">
+                    填写后，种子意图会先由该自定义 Agent 领取执行，期间 planner/worker 暂停；执行结束再恢复正常规划。
+                  </p>
                 </div>
                 <div className="grid gap-2">
                   <label htmlFor="asset-mode" className="text-sm">资产模式</label>

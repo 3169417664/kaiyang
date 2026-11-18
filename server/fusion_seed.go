@@ -44,3 +44,36 @@ func (s *Server) seedFusion() {
 			WHERE nkey=$3 AND COALESCE(default_planner_template_id,0)=0`, pt.ID, wt.ID, name)
 	}
 }
+
+// seedFusionAgents 必须在 orchestration tools seed 之后调用，否则工具绑定找不到行。
+func (s *Server) seedFusionAgents() {
+	s.seedOptionalAgent("trace_cleaner", "痕迹清理",
+		"由 planner 对符合清理条件的 finding 显式派发：核对 [投放] 事实，列出清理计划并在人工确认后逐项执行。",
+		agent.TraceCleanerDefaultPrompt,
+		[]string{"get_task_graph", "get_task_node_detail", "list_task_findings", "record_fact", "save_evidence"})
+	s.seedOptionalAgent("vuln_dispatcher", "漏洞派发",
+		"由 planner 显式派发：核对 finding 与执行模式，按需派生/追加内网渗透子任务。",
+		"你是授权渗透测试系统里的漏洞派发 Agent。先读任务图、Finding、操作约束与执行模式；"+
+			"只有证据满足当前 execution mode 的处置前提时才 spawn_task 或追加子任务；"+
+			"同一资产必须先去重，不扩大任务授权范围。",
+		[]string{"spawn_task", "get_task_graph", "list_task_findings", "get_task_node_detail", "list_llm_profiles",
+			"check_internal_asset_task", "append_finding_to_task"})
+}
+
+// seedOptionalAgent 幂等播种预置自定义 Agent：已存在则保留用户修改，不覆盖。
+func (s *Server) seedOptionalAgent(key, name, desc, prompt string, tools []string) {
+	if existing, _ := s.m.pg.GetAgentByKey(key); existing != nil {
+		return
+	}
+	a, err := s.m.pg.CreateAgent(key, name, desc)
+	if err != nil {
+		log.Printf("[seed] agent %s: %v", key, err)
+		return
+	}
+	if err := s.m.pg.SeedPromptIfEmpty(a.ID, prompt); err != nil {
+		log.Printf("[seed] agent %s prompt: %v", key, err)
+	}
+	if err := s.m.pg.AddAgentToToolBinding(key, tools); err != nil {
+		log.Printf("[seed] agent %s tools: %v", key, err)
+	}
+}

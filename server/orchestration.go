@@ -80,6 +80,9 @@ func (s *Server) orchestrationTools() []actool.CoreTool {
 		s.toolUpdateFindingReport(),
 		s.toolGetFindingTraffic(),
 		s.toolBindFindingTraffic(),
+		s.toolDispatchFindingToAgent(),
+		s.toolCheckInternalAssetTask(),
+		s.toolAppendFindingToTask(),
 	}
 }
 
@@ -483,6 +486,12 @@ func (s *Server) seedOrchestrationTools() {
 		bindings := autoAgents
 		if t.Name() == "bind_finding_traffic" {
 			bindings = json.RawMessage(`["reporter"]`)
+		}
+		if t.Name() == "dispatch_finding_to_agent" {
+			bindings = json.RawMessage(`["planner"]`)
+		}
+		if t.Name() == "check_internal_asset_task" || t.Name() == "append_finding_to_task" {
+			bindings = json.RawMessage(`["vuln_dispatcher"]`)
 		}
 		_ = s.m.PG().SeedTool(t.Name(), t.Description(), schema, bindings)
 	}

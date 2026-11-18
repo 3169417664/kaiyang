@@ -4,6 +4,21 @@
 
 ## [Unreleased]
 
+### 新增（KAIYANG Phase 4：自定义执行器 + Finding 编排）
+
+- **自定义执行器**：`agents.executor_key` / `planner_controlled`；`tasks.pre_agent` 种子意图
+  以 proposed + executor=<key> 落库，由 pre_agent 阶段领取执行；默认 worker 的 Frontier
+  跳过带 executor 的意图。
+- **执行器工具**：`list_intents`、`claim_executor_intent`；执行链复用 Worker，保留执行期
+  安全/证据/审批/录制。
+- **Finding 显式派发**：`dispatch_finding_to_agent` + `finding_agent_invocations`，
+  同一 agent+finding 幂等，10 分钟补发。
+- **内网派发去重**：`task_dispatch_targets`、`check_internal_asset_task`、`append_finding_to_task`；
+  预置 `vuln_dispatcher`。
+- **trace_cleaner**：预置痕迹清理 Agent，按 `[投放]` 事实工作，保留「列计划→用户同意→逐项执行」，
+  不依赖 godzilla/shell_test。
+- **worker 投放事实契约**：[投放] 事实强制记录主机/路径/账号/时间/清理方式。
+
 ### 新增（KAIYANG Phase 3：审核 + 场景模板）
 
 - **意图审核状态机**：`proposed` 待审态、`review_status`、`content_version` CAS；
