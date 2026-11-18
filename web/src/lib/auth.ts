@@ -1,5 +1,6 @@
-const TOKEN_KEY = "pojun_token";
-const COOKIE_MAX_AGE = 7 * 24 * 60 * 60; // 7 天（秒）
+const TOKEN_KEY = "kaiyang_token";
+const LEGACY_TOKEN_KEY = "pojun_token";
+const COOKIE_MAX_AGE = 8 * 60 * 60; // 480 分钟（秒）
 
 export interface CurrentUser {
   id: string;
@@ -13,32 +14,35 @@ export interface CurrentUser {
 export const auth = {
   getToken(): string | null {
     if (typeof window === "undefined") return null;
-    // Mock demo：无真实登录，返回一个假 token 让路由守卫放行、直接进主界面。
-    return localStorage.getItem(TOKEN_KEY) ?? (process.env.NEXT_PUBLIC_MOCK === "1" ? "mock-demo" : null);
+    // 兼容旧版 pojun_token；读到后下次写入会迁移到 kaiyang_token。
+    const token = localStorage.getItem(TOKEN_KEY) ?? localStorage.getItem(LEGACY_TOKEN_KEY);
+    return token ?? (process.env.NEXT_PUBLIC_MOCK === "1" ? "mock-demo" : null);
   },
 
   setToken(token: string): void {
     localStorage.setItem(TOKEN_KEY, token);
-    // 同步写 cookie，供 Next.js middleware 服务端读取
+    localStorage.removeItem(LEGACY_TOKEN_KEY);
     document.cookie = `${TOKEN_KEY}=${encodeURIComponent(token)}; path=/; max-age=${COOKIE_MAX_AGE}; SameSite=Lax`;
+    document.cookie = `${LEGACY_TOKEN_KEY}=; path=/; max-age=0`;
   },
 
   clearToken(): void {
     localStorage.removeItem(TOKEN_KEY);
+    localStorage.removeItem(LEGACY_TOKEN_KEY);
     document.cookie = `${TOKEN_KEY}=; path=/; max-age=0`;
+    document.cookie = `${LEGACY_TOKEN_KEY}=; path=/; max-age=0`;
   },
 
-  // 从 JWT payload 的 sub 字段解析当前用户，仅用于展示，不做签名验证。
+  // 从 JWT payload 解析展示信息；username 优先取 usr，旧 token 回退 sub。
   getCurrentUser(): CurrentUser | null {
     const token = this.getToken();
     if (!token) return null;
     try {
       const parts = token.split(".");
       if (parts.length !== 3) return null;
-      // base64url → base64
       const payload = JSON.parse(atob(parts[1].replace(/-/g, "+").replace(/_/g, "/")));
-      const username: string = payload.sub ?? "POJUN";
-      return { id: "1", name: username, username, email: "", avatar: "", role: "operator" };
+      const username: string = payload.usr ?? payload.sub ?? "admin";
+      return { id: payload.sub ?? username, name: username, username, email: "", avatar: "", role: "" };
     } catch {
       return null;
     }

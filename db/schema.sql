@@ -1605,3 +1605,66 @@ CREATE INDEX IF NOT EXISTS idx_finding_updates_finding ON finding_updates(findin
 --   §FUSION-C  报告 / finding_enrichment / reproduction
 --   §FUSION-D  知识库
 --   §FUSION-E  资产凭据 / 内网拓扑
+
+-- ── §FUSION-A  RBAC / 审计 ────────────────────────────────────────────
+-- 三系统角色：admin / operator / viewer。scope 列保留但当前不做资源隔离
+-- （所有登录用户看到同一份任务/资产数据），后续需要时再用。
+CREATE TABLE IF NOT EXISTS rbac_users (
+    id                   TEXT PRIMARY KEY,
+    username             TEXT NOT NULL UNIQUE,
+    display_name         TEXT NOT NULL DEFAULT '',
+    password_hash        TEXT NOT NULL,
+    enabled              BOOLEAN NOT NULL DEFAULT true,
+    is_builtin           BOOLEAN NOT NULL DEFAULT false,
+    token_version        INT NOT NULL DEFAULT 0,
+    must_change_password BOOLEAN NOT NULL DEFAULT false,
+    created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at           TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_rbac_users_name ON rbac_users(username);
+
+CREATE TABLE IF NOT EXISTS rbac_roles (
+    id          TEXT PRIMARY KEY,
+    name        TEXT NOT NULL UNIQUE,
+    description TEXT NOT NULL DEFAULT '',
+    scope       TEXT NOT NULL DEFAULT 'all',
+    is_system   BOOLEAN NOT NULL DEFAULT false,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS rbac_permissions (
+    key         TEXT PRIMARY KEY,
+    description TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS rbac_role_permissions (
+    role_id        TEXT NOT NULL REFERENCES rbac_roles(id) ON DELETE CASCADE,
+    permission_key TEXT NOT NULL,
+    PRIMARY KEY (role_id, permission_key)
+);
+
+CREATE TABLE IF NOT EXISTS rbac_user_roles (
+    user_id TEXT NOT NULL REFERENCES rbac_users(id) ON DELETE CASCADE,
+    role_id TEXT NOT NULL REFERENCES rbac_roles(id) ON DELETE CASCADE,
+    PRIMARY KEY (user_id, role_id)
+);
+CREATE INDEX IF NOT EXISTS idx_rbac_user_roles_user ON rbac_user_roles(user_id);
+
+CREATE TABLE IF NOT EXISTS audit_logs (
+    id         BIGSERIAL PRIMARY KEY,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    actor      TEXT NOT NULL DEFAULT '',
+    category   TEXT NOT NULL DEFAULT '',
+    action     TEXT NOT NULL DEFAULT '',
+    result     TEXT NOT NULL DEFAULT 'success',
+    ip         TEXT NOT NULL DEFAULT '',
+    message    TEXT NOT NULL DEFAULT '',
+    detail     JSONB NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_id ON audit_logs(id DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_actor ON audit_logs(actor);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_category ON audit_logs(category, id DESC);
+
+-- 任务创建者只用于审计归因，不做可见性隔离。
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS created_by TEXT NOT NULL DEFAULT '';

@@ -4,6 +4,19 @@
 
 ## [Unreleased]
 
+### 新增（KAIYANG Phase 1：多用户底座）
+
+- **多用户 RBAC**：新增 `rbac_users/roles/permissions/role_permissions/user_roles`，
+  固定 admin / operator / viewer 三角色；权限表 + 路由级强制，未映射路由默认 admin-only。
+- **认证重写**：JWT 携带 `sub/usr/ver`，改密/停用只递增该用户 `token_version`，
+  不再轮换全局 JWT key；会话改为 480 分钟滑动续期。
+- **首页迁移**：旧单管理员密码自动迁移为内置 `admin`，首次登录强制改密；
+  `POJUN`/`ARTEX` 不再作为登录别名。
+- **登录防护**：IP + 账号双维度滑动窗口锁定；可信代理之外的 XFF 一律不采信。
+- **审计**：登录、用户管理、改密等写 `audit_logs`；admin 与 operator 可读。
+- **前端**：新增「用户与角色」「审计日志」「首次登录改密」页面；侧边栏按权限过滤；
+  登录页用户名可输入。
+
 ## [0.4.82] - 2026-11-18
 
 ### 新增（issue #24 第二项：session_login 连续失败熔断）

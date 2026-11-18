@@ -1,6 +1,10 @@
 package db
 
-import "database/sql"
+import (
+	"database/sql"
+	"strconv"
+	"strings"
+)
 
 // Settings is a tiny key-value store for global app config the UI toggles at
 // runtime (e.g. traffic_capture). Missing keys fall back to caller defaults.
@@ -41,6 +45,19 @@ ON CONFLICT (key) DO NOTHING`, key, value)
 		return false, err
 	}
 	return n > 0, nil
+}
+
+// GetInt returns the integer setting, or def when unset/unparseable.
+func (d *DB) GetInt(key string, def int) int {
+	v, ok, err := d.GetSetting(key)
+	if err != nil || !ok {
+		return def
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil {
+		return def
+	}
+	return n
 }
 
 // GetBool returns the boolean setting, or def when unset/unparseable.

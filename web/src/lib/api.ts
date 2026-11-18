@@ -19,6 +19,7 @@ import type {
   AssetInterceptRule,
   AssetInterceptRuleInput,
   Audit,
+  AuditLog,
   BatchCategoryItem,
   BatchControlItem,
   ChatAttachment,
@@ -52,6 +53,9 @@ import type {
   InstallBatchResult,
   InstallJob,
   ProxyCheckResult,
+  RbacMe,
+  RbacRole,
+  RbacUser,
   IntentAsset,
   InterceptApprovalFilter,
   InterceptApprovalRow,
@@ -127,7 +131,7 @@ import type {
 
 function getToken(): string | null {
   if (typeof window === "undefined") return null;
-  return localStorage.getItem("pojun_token");
+  return localStorage.getItem("kaiyang_token") ?? localStorage.getItem("pojun_token");
 }
 
 export async function http<T>(path: string, init?: RequestInit): Promise<T> {
@@ -149,11 +153,25 @@ export async function http<T>(path: string, init?: RequestInit): Promise<T> {
   });
   if (r.status === 401) {
     if (typeof window !== "undefined") {
+      localStorage.removeItem("kaiyang_token");
       localStorage.removeItem("pojun_token");
+      document.cookie = "kaiyang_token=; path=/; max-age=0";
       document.cookie = "pojun_token=; path=/; max-age=0";
       window.location.href = "/login";
     }
     throw new Error("未授权");
+  }
+  if (r.status === 403) {
+    let msg = "";
+    try {
+      const payload = (await r.clone().json()) as { error?: unknown };
+      if (typeof payload.error === "string") msg = payload.error;
+    } catch {
+      // ignore
+    }
+    if (msg.includes("首次登录需先修改密码") && typeof window !== "undefined") {
+      window.location.href = "/force-change-password";
+    }
   }
   if (!r.ok) {
     const fallback = `${init?.method ?? "GET"} ${path}: ${r.status}`;
@@ -287,10 +305,34 @@ export const api = {
 
   // ---- auth ----
   authStatus: () => get<{ initialized: boolean }>("/auth/status"),
-  login: (username: string, password: string) => post<{ token: string }>("/auth/login", { username, password }),
+  login: (username: string, password: string) =>
+    post<{ token: string; must_change_password?: boolean }>("/auth/login", { username, password }),
   initPassword: (password: string) => post<{ token: string }>("/auth/init", { password }),
   changePassword: (oldPassword: string, newPassword: string) =>
-    post<{ ok: boolean }>("/auth/change-password", { old_password: oldPassword, new_password: newPassword }),
+    post<{ ok: boolean; token?: string }>("/auth/change-password", { old_password: oldPassword, new_password: newPassword }),
+
+  // ---- RBAC / audit ----
+  rbacMe: () => get<RbacMe>("/rbac/me"),
+  rbacUsers: () => get<{ users: RbacUser[] }>("/rbac/users").then((r) => r.users ?? []),
+  rbacCreateUser: (input: {
+    username: string;
+    display_name?: string;
+    password: string;
+    enabled?: boolean;
+    role_ids: string[];
+  }) => post<{ user: RbacUser }>("/rbac/users", input),
+  rbacUpdateUser: (id: string, input: { display_name?: string; enabled?: boolean; role_ids?: string[]; password?: string }) =>
+    put<{ ok: boolean }>(`/rbac/users/${encodeURIComponent(id)}`, input),
+  rbacDeleteUser: (id: string) => del<{ ok: boolean }>(`/rbac/users/${encodeURIComponent(id)}`),
+  rbacRoles: () => get<{ roles: RbacRole[] }>("/rbac/roles").then((r) => r.roles ?? []),
+  auditLogs: (params: { category?: string; actor?: string; action?: string; result?: string; limit?: number; offset?: number } = {}) => {
+    const q = new URLSearchParams();
+    for (const [k, v] of Object.entries(params)) {
+      if (v !== undefined && v !== "") q.set(k, String(v));
+    }
+    const s = q.toString();
+    return get<{ logs: AuditLog[]; total: number }>(`/audit/logs${s ? `?${s}` : ""}`);
+  },
 
   // ---- tasks ----
   tasks: () =>
