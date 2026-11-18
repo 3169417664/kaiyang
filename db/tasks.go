@@ -222,6 +222,9 @@ type TaskCreateOptions struct {
 	// DispatchAssetKeys 是内网子任务实际目标的规范化资产键（IP > 根域 > 域 > URL host）。
 	// 与任务创建同一事务写入 task_dispatch_targets；唯一键阻止跨父任务/并发的同资产重复派发。
 	DispatchAssetKeys []string
+	// DispatchFindingID 是触发派发的 findings.id。>0 时在创建任务的事务内把该
+	// Finding 的祖先子图（yields/derived_from 反向可达的 intent/fact/finding）
+	// 复制进新任务的 exploration，见 copyFindingAncestorsTx。
 	DispatchFindingID int64
 }
 
@@ -277,9 +280,10 @@ func (d *DB) CreateTaskWithOptions(description, goal string, opts TaskCreateOpti
 		"description": description,
 		"goal":        goal,
 	})
-	if _, err := tx.Exec(`
+	var originID int64
+	if err := tx.QueryRow(`
 INSERT INTO exploration_nodes(exploration_id, kind, payload, priority, state, origin)
-VALUES ($1, 'fact', $2, 0, 'origin', 'system')`, expID, string(originPayload)); err != nil {
+VALUES ($1, 'fact', $2, 0, 'origin', 'system') RETURNING id`, expID, string(originPayload)).Scan(&originID); err != nil {
 		return nil, err
 	}
 	if opts.TimeoutSeconds < 0 {
@@ -348,6 +352,10 @@ RETURNING id, status, paused, created_at`, opts.Name, opts.CategoryID, descripti
 		return nil, err
 	}
 	if err := insertTaskInterceptRules(tx, t.ID, opts.InterceptRules); err != nil {
+		return nil, err
+	}
+	// 内网派发：同事务复制触发 Finding 的祖先推理链，让子任务开局就有前置事实。
+	if err := copyFindingAncestorsTx(tx, opts.DispatchFindingID, expID, originID); err != nil {
 		return nil, err
 	}
 	if len(opts.LLMProfileIDs) == 0 {
