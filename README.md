@@ -41,14 +41,13 @@ KAIYANG 已完成 Phase 1–8 的主体缝合，`main` 为最新可运行版本�
 
 ### 尚未完成（按优先级）
 
-- 审核 AI 预审/自动处置（`review_auto` 目前只落库，纯人工审核）
-- 报告 AI 章节叙述与“确认即自动富化”
+- `spawn_task` 携带 `finding_id` 时只做资产去重与派发登记，尚未复制 Finding 的完整祖先子图
+- 报告模板的完整多语言正文翻译（模板 locale 已存储，正文仍以中文为主）
 - 6 个领域模板的差异化正文（当前共用 Pojun 默认正文）
-- 建任务表单的模板下拉
-- 拓扑画布（后端 API 完整，前端目前是节点管理表格）
-- 资产页凭据 Tab（后端与工具已启用）
-- `spawn_task` 的 `finding_id/pre_agent/template/worker_count` 参数合并与自动内网派发
-- 知识库任务级 Tab、凭据 UI、报告模板/Logo 上传 UI
+- 正式 Release / tag 与可用的 `install.sh` 下载链路
+- 新模块的端到端测试、空库/旧库迁移回归脚本、Docker Compose 冒烟
+- 拓扑画布目前使用简单网格布局，尚未引入 dagre 自动分层
+- 15 个 Dependabot 依赖升级 PR 仍 open
 
 ---
 
