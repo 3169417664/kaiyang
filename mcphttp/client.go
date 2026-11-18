@@ -17,16 +17,66 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/Autumn-27/norma/llm"
 	"github.com/Autumn-27/norma/permission"
 	actool "github.com/Autumn-27/norma/tool"
 )
+
+// mcpAllowLocalEnv 是显式逃生口：本机 HTTP MCP（127.0.0.1 上的自建服务）默认
+// 被拨号守卫拒绝，避免任意配置的 URL 变成 SSRF 原语。确需本机服务时显式打开。
+const mcpAllowLocalEnv = "KAIYANG_MCP_ALLOW_LOCAL"
+
+func mcpAllowLocal() bool {
+	v := strings.TrimSpace(os.Getenv(mcpAllowLocalEnv))
+	if v == "" {
+		v = strings.TrimSpace(os.Getenv("POJUN_MCP_ALLOW_LOCAL"))
+	}
+	return v == "1" || strings.EqualFold(v, "true")
+}
+
+// blockLocalMCPDial 在连接建立阶段（DNS 解析之后）拦截回环/链路本地/组播地址，
+// 同时覆盖 DNS 重绑定：保存配置时解析到公网、真正连接时解析到内网也会被挡。
+func blockLocalMCPDial(_, address string, _ syscall.RawConn) error {
+	if mcpAllowLocal() {
+		return nil
+	}
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return err
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return fmt.Errorf("无法解析目标地址 %q", host)
+	}
+	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
+		ip.IsUnspecified() || ip.IsMulticast() {
+		return fmt.Errorf("拒绝连接本机/链路本地地址 %s（如确需本机 HTTP MCP，设置 %s=1）", ip, mcpAllowLocalEnv)
+	}
+	return nil
+}
+
+func mcpTransport(insecure bool) *http.Transport {
+	var t *http.Transport
+	if base, ok := http.DefaultTransport.(*http.Transport); ok {
+		t = base.Clone()
+	} else {
+		t = &http.Transport{Proxy: http.ProxyFromEnvironment}
+	}
+	t.DialContext = (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second, Control: blockLocalMCPDial}).DialContext
+	if insecure {
+		t.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+	}
+	return t
+}
 
 const protocolVersion = "2025-06-18"
 const legacySSEProtocolVersion = "2024-11-05"
@@ -101,10 +151,7 @@ func New(ctx context.Context, server, url string, headers map[string]string, ins
 	if err != nil {
 		return nil, err
 	}
-	hc := &http.Client{Timeout: 120 * time.Second}
-	if insecure {
-		hc.Transport = &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
-	}
+	hc := &http.Client{Timeout: 120 * time.Second, Transport: mcpTransport(insecure)}
 	c := &Client{
 		server:   server,
 		url:      url,
@@ -126,10 +173,8 @@ func NewSSE(ctx context.Context, server, sseURL string, headers map[string]strin
 	if err != nil {
 		return nil, err
 	}
-	hc := &http.Client{} // the SSE stream is intentionally long-lived.
-	if insecure {
-		hc.Transport = &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
-	}
+	// SSE 流本身是长连接，故不设整体 Timeout；拨号阶段仍受守卫约束。
+	hc := &http.Client{Transport: mcpTransport(insecure)}
 	streamCtx, cancel := context.WithCancel(context.Background())
 	req, err := http.NewRequestWithContext(streamCtx, http.MethodGet, sseURL, nil)
 	if err != nil {

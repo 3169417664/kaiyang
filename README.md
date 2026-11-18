@@ -193,6 +193,14 @@ docker compose up -d
 
 KAIYANG 仅可用于你拥有、受你控制或已获得明确书面授权的系统与隔离靶场。禁止对未授权目标进行扫描、探测、利用或任何破坏性操作。使用前请阅读 [SECURITY.md](SECURITY.md) 与 [LICENSE](LICENSE)。
 
+- **宿主命令执行仅限管理员发起的运行**：operator 的任务/会话可使用联网测试与图谱工具，
+  但拿不到 Bash/Read/Write/job/MCP 等宿主访问面。
+- **会话令牌使用 HttpOnly Cookie**，前端不落 localStorage；JWT 额外绑定服务端会话，
+  仅有签名密钥无法伪造管理员。
+- **流量删除、拦截规则、工具门控、LLM judge、MCP/ScopeSentry 数据源**为管理面，
+  operator 只能审批待办，不能修改安全控制本身。
+- 2026-11-18 审计修复与残余风险见 [docs/security/2026-11-18-审计修复记录.md](docs/security/2026-11-18-审计修复记录.md)。
+
 ---
 
 ## 致谢

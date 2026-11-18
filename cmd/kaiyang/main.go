@@ -118,6 +118,9 @@ func run() int {
 	log.Printf("[config] skill 目录: %s", skillDir)
 	srv := server.New(ctx, mgr, skillDir, *dataDir, config.BaseDir())
 	defer srv.Close()
+	// 服务已完成配置读取与连接池建立；从进程环境移除 DSN、LLM Key、云令牌等，
+	// 使 Agent 的 Bash/job/MCP/脚本子进程继承不到敏感变量。
+	agent.ScrubSensitiveEnv()
 	httpSrv := &http.Server{
 		Addr:              *addr,
 		Handler:           srv.Handler(),

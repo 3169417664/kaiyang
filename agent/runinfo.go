@@ -44,6 +44,23 @@ func explorationID(ts *db.ExplorationStore) int64 {
 	return ts.ID()
 }
 
+// runAdminKey 标记本次运行是否由管理员发起。默认 true（系统内部运行、旧数据）；
+// 只有明确由非管理员账号创建的任务/会话才写入 false。ToolResolve 据此摘除
+// 本地命令执行、宿主文件读取、平台高危工具和 stdio MCP。
+type runAdminKey struct{}
+
+func WithRunAdmin(ctx context.Context, admin bool) context.Context {
+	return context.WithValue(ctx, runAdminKey{}, admin)
+}
+
+func RunAdminFrom(ctx context.Context) bool {
+	v, ok := ctx.Value(runAdminKey{}).(bool)
+	if !ok {
+		return true
+	}
+	return v
+}
+
 type runInfoKey struct{}
 
 // WithRunInfo attaches run attribution to ctx.

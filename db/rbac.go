@@ -27,59 +27,61 @@ const (
 
 // RBACPermissions 是 KAIYANG 的权限目录（module:action）。
 var RBACPermissions = map[string]string{
-	"auth:self":       "管理自己的会话和密码",
-	"dashboard:read":  "查看仪表盘总览",
-	"task:read":       "查看任务 / 探索链路 / 会话",
-	"task:write":      "创建 / 控制任务、发送对话引导",
-	"task:delete":     "删除任务 / 归档",
-	"finding:read":    "查看漏洞发现",
-	"finding:write":   "创建 / 更新漏洞发现、富化、证据",
-	"finding:delete":  "删除漏洞发现",
-	"traffic:read":    "查看流量录制",
-	"asset:read":      "查看资产 / 公司 / 资产同步",
-	"asset:write":     "创建 / 导入 / 同步资产",
-	"asset:delete":    "删除资产",
-	"credential:read": "查看资产凭据（不含 secret）",
-	"review:read":     "查看待审意图 / 审核会话",
-	"review:approve":  "批准 / 驳回意图",
-	"topology:read":   "查看内网拓扑",
-	"topology:write":  "编辑内网拓扑",
-	"intercept:read":  "查看拦截规则 / 审批",
-	"intercept:write": "管理拦截规则 / 处理审批",
-	"report:read":     "查看 / 下载报告与模板",
-	"report:write":    "生成报告、管理模板与报告设置",
-	"report:delete":   "删除报告 / 模板",
-	"knowledge:read":  "查看知识库 / 检索",
-	"knowledge:write": "创建 / 更新知识库文档",
-	"knowledge:delete": "删除知识库文档",
-	"notify:read":     "查看通知渠道与投递",
-	"notify:write":    "管理通知渠道",
-	"proxy:read":      "查看代理池 / 出口",
-	"proxy:write":     "管理代理池 / 出口",
-	"vulnintel:read":  "查看漏洞情报",
-	"vulnintel:write": "同步 / 配置漏洞情报",
-	"log:read":        "查看后端日志 / 审计",
-	"llm:read":        "查看 LLM 配置",
-	"llm:write":       "管理 LLM 配置与模型",
-	"agent:read":      "查看 Agent 配置",
-	"agent:write":     "管理 Agent / 提示词 / 触发器",
-	"mcp:read":        "查看 MCP 服务",
-	"mcp:write":       "管理 MCP 服务",
-	"skill:read":      "查看技能",
-	"skill:write":     "创建 / 更新技能",
-	"skill:delete":    "删除技能",
-	"tool:read":       "查看工具",
-	"tool:write":      "管理工具 / 自定义工具",
-	"config:read":     "查看系统配置",
-	"config:write":    "修改系统配置 / 更新 / 宿主环境",
-	"rbac:read":       "查看用户 / 角色 / 权限",
-	"rbac:write":      "管理用户 / 角色",
-	"c2:read":         "查看监听器 / C2",
-	"c2:write":        "启停监听器 / 管理 C2",
-	"hostenv:read":    "查看宿主环境",
-	"hostenv:write":   "安装宿主工具 / 维护宿主环境",
-	"workspace:read":  "查看 / 下载工作空间文件",
-	"workspace:write": "编辑 / 上传 / 删除工作空间文件",
+	"auth:self":         "管理自己的会话和密码",
+	"dashboard:read":    "查看仪表盘总览",
+	"task:read":         "查看任务 / 探索链路 / 会话",
+	"task:write":        "创建 / 控制任务、发送对话引导",
+	"task:delete":       "删除任务 / 归档",
+	"finding:read":      "查看漏洞发现",
+	"finding:write":     "创建 / 更新漏洞发现、富化、证据",
+	"finding:delete":    "删除漏洞发现",
+	"traffic:read":      "查看流量录制",
+	"traffic:delete":    "删除流量证据（破坏性，仅管理员）",
+	"asset:read":        "查看资产 / 公司 / 资产同步",
+	"asset:write":       "创建 / 导入 / 同步资产",
+	"asset:delete":      "删除资产",
+	"credential:read":   "查看资产凭据（不含 secret）",
+	"review:read":       "查看待审意图 / 审核会话",
+	"review:approve":    "批准 / 驳回意图",
+	"topology:read":     "查看内网拓扑",
+	"topology:write":    "编辑内网拓扑",
+	"intercept:read":    "查看拦截规则 / 审批",
+	"intercept:approve": "处理待审批的拦截请求（不能改规则/开关）",
+	"intercept:write":   "管理拦截规则 / 全局审批配置（仅管理员）",
+	"report:read":       "查看 / 下载报告与模板",
+	"report:write":      "生成报告、管理模板与报告设置",
+	"report:delete":     "删除报告 / 模板",
+	"knowledge:read":    "查看知识库 / 检索",
+	"knowledge:write":   "创建 / 更新知识库文档",
+	"knowledge:delete":  "删除知识库文档",
+	"notify:read":       "查看通知渠道与投递",
+	"notify:write":      "管理通知渠道",
+	"proxy:read":        "查看代理池 / 出口",
+	"proxy:write":       "管理代理池 / 出口",
+	"vulnintel:read":    "查看漏洞情报",
+	"vulnintel:write":   "同步 / 配置漏洞情报",
+	"log:read":          "查看后端日志 / 审计",
+	"llm:read":          "查看 LLM 配置",
+	"llm:write":         "管理 LLM 配置与模型",
+	"agent:read":        "查看 Agent 配置",
+	"agent:write":       "管理 Agent / 提示词 / 触发器",
+	"mcp:read":          "查看 MCP 服务",
+	"mcp:write":         "管理 MCP 服务",
+	"skill:read":        "查看技能",
+	"skill:write":       "创建 / 更新技能",
+	"skill:delete":      "删除技能",
+	"tool:read":         "查看工具",
+	"tool:write":        "管理工具 / 自定义工具",
+	"config:read":       "查看系统配置",
+	"config:write":      "修改系统配置 / 更新 / 宿主环境",
+	"rbac:read":         "查看用户 / 角色 / 权限",
+	"rbac:write":        "管理用户 / 角色",
+	"c2:read":           "查看监听器 / C2",
+	"c2:write":          "启停监听器 / 管理 C2",
+	"hostenv:read":      "查看宿主环境",
+	"hostenv:write":     "安装宿主工具 / 维护宿主环境",
+	"workspace:read":    "查看 / 下载工作空间文件",
+	"workspace:write":   "编辑 / 上传 / 删除工作空间文件",
 }
 
 var operatorPermissions = []string{
@@ -91,7 +93,8 @@ var operatorPermissions = []string{
 	"credential:read",
 	"review:read", "review:approve",
 	"topology:read", "topology:write",
-	"intercept:read", "intercept:write",
+	// 审批请求可以处理，但规则/工具门控/LLM judge 配置属于安全控制面，仅 admin。
+	"intercept:read", "intercept:approve",
 	"report:read", "report:write", "report:delete",
 	"knowledge:read", "knowledge:write", "knowledge:delete",
 	"notify:read", "notify:write",
@@ -169,30 +172,38 @@ func (d *DB) RBACNeedsBootstrap() (bool, error) {
 
 // BootstrapRBAC 幂等播种权限目录 + 三角色 + 角色授权；无用户且 adminHash 非空时建 admin。
 func (d *DB) BootstrapRBAC(adminHash string, mustChange bool) error {
+	_, err := d.BootstrapRBACWithAdmin(adminHash, mustChange)
+	return err
+}
+
+// BootstrapRBACWithAdmin 与 BootstrapRBAC 相同，但返回“本次调用是否真正创建了
+// admin”。首次初始化端点必须依据该返回值签发 token：并发 init 中只有真正写入
+// 密码的那个请求可以拿到会话，其余请求即使看到 userCount==0 也不能签发。
+func (d *DB) BootstrapRBACWithAdmin(adminHash string, mustChange bool) (bool, error) {
 	now := time.Now()
 	tx, err := d.Begin()
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer func() { _ = tx.Rollback() }()
 
 	for key, desc := range RBACPermissions {
 		if _, err := tx.Exec(`INSERT INTO rbac_permissions(key, description) VALUES ($1,$2)
 			ON CONFLICT (key) DO UPDATE SET description=EXCLUDED.description`, key, desc); err != nil {
-			return err
+			return false, err
 		}
 	}
 	// 清理已下线的权限 key，避免旧库残留。
 	rows, err := tx.Query(`SELECT key FROM rbac_permissions`)
 	if err != nil {
-		return err
+		return false, err
 	}
 	var stale []string
 	for rows.Next() {
 		var k string
 		if err := rows.Scan(&k); err != nil {
 			rows.Close()
-			return err
+			return false, err
 		}
 		if _, ok := RBACPermissions[k]; !ok {
 			stale = append(stale, k)
@@ -214,14 +225,14 @@ func (d *DB) BootstrapRBAC(adminHash string, mustChange bool) error {
 			VALUES ($1,$2,$3,$4,true,$5,$5)
 			ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, description=EXCLUDED.description, scope=EXCLUDED.scope, is_system=true, updated_at=EXCLUDED.updated_at`,
 			r.ID, r.Name, r.Description, r.Scope, now); err != nil {
-			return err
+			return false, err
 		}
 	}
 
 	// 系统角色授权确定性重建。
 	if _, err := tx.Exec(`DELETE FROM rbac_role_permissions WHERE role_id IN ($1,$2,$3)`,
 		RBACRoleAdmin, RBACRoleOperator, RBACRoleViewer); err != nil {
-		return err
+		return false, err
 	}
 	grant := func(role, key string) error {
 		if _, ok := RBACPermissions[key]; !ok {
@@ -232,34 +243,46 @@ func (d *DB) BootstrapRBAC(adminHash string, mustChange bool) error {
 	}
 	for key := range RBACPermissions {
 		if err := grant(RBACRoleAdmin, key); err != nil {
-			return err
+			return false, err
 		}
 	}
 	for _, key := range operatorPermissions {
 		if err := grant(RBACRoleOperator, key); err != nil {
-			return err
+			return false, err
 		}
 	}
 	for _, key := range viewerPermissions {
 		if err := grant(RBACRoleViewer, key); err != nil {
-			return err
+			return false, err
 		}
 	}
 
 	var userCount int
 	if err := tx.QueryRow(`SELECT COUNT(*) FROM rbac_users`).Scan(&userCount); err != nil {
-		return err
+		return false, err
 	}
+	created := false
 	if userCount == 0 && strings.TrimSpace(adminHash) != "" {
-		if _, err := tx.Exec(`INSERT INTO rbac_users(id,username,display_name,password_hash,enabled,is_builtin,must_change_password,created_at,updated_at)
-			VALUES ('admin','admin','管理员',$1,true,true,$3,$2,$2)`, adminHash, now, mustChange); err != nil {
-			return err
+		// ON CONFLICT 是竞态防护的最后一层：两个并发 init 都读到 count=0 时，
+		// 只有先写入者的 RowsAffected=1；后者 0 行，不能继续签发会话。
+		res, ierr := tx.Exec(`INSERT INTO rbac_users(id,username,display_name,password_hash,enabled,is_builtin,must_change_password,created_at,updated_at)
+			VALUES ('admin','admin','管理员',$1,true,true,$3,$2,$2)
+			ON CONFLICT (id) DO NOTHING`, adminHash, now, mustChange)
+		if ierr != nil {
+			return false, ierr
 		}
-		if _, err := tx.Exec(`INSERT INTO rbac_user_roles(user_id,role_id) VALUES ('admin',$1) ON CONFLICT DO NOTHING`, RBACRoleAdmin); err != nil {
-			return err
+		n, _ := res.RowsAffected()
+		if n > 0 {
+			if _, err := tx.Exec(`INSERT INTO rbac_user_roles(user_id,role_id) VALUES ('admin',$1) ON CONFLICT DO NOTHING`, RBACRoleAdmin); err != nil {
+				return false, err
+			}
+			created = true
 		}
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return created, nil
 }
 
 func scanRBACUser(row interface{ Scan(...any) error }) (*RBACUser, error) {

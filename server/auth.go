@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
@@ -14,6 +15,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -23,8 +25,9 @@ import (
 )
 
 const (
-	jwtKeyFilename = "jwt.key"
-	authPassKey    = "auth.password_hash" // 旧单管理员密码，仅用于首启迁移
+	jwtKeyFilename  = "jwt.key"
+	tokenCookieName = "kaiyang_token"
+	authPassKey     = "auth.password_hash" // 旧单管理员密码，仅用于首启迁移
 	// 480 分钟滑动续期；空闲超过该时长需重新登录。设置键可覆盖。
 	defaultSessionTTL = 480 * time.Minute
 	sessionTTLKey     = "auth.session_ttl_minutes"
@@ -39,7 +42,7 @@ const (
 type ctxKey int
 
 const (
-	accessCtxKey ctxKey = 1
+	accessCtxKey   ctxKey = 1
 	adminRunCtxKey ctxKey = 2
 )
 
@@ -136,16 +139,121 @@ func (s *Server) rotateJWTKey() error {
 	return nil
 }
 
-func signJWTTTL(key []byte, userID, username string, ver int, ttl time.Duration) (string, error) {
+var (
+	dummyHashOnce sync.Once
+	dummyHashVal  []byte
+)
+
+// dummyPasswordHash 用于登录时对不存在的账号做一次等价 bcrypt 比对，抹平
+// “用户不存在”和“密码错误”的响应时间差。
+func dummyPasswordHash() []byte {
+	dummyHashOnce.Do(func() {
+		buf := make([]byte, 24)
+		_, _ = rand.Read(buf)
+		h, err := bcrypt.GenerateFromPassword([]byte(hex.EncodeToString(buf)), bcrypt.DefaultCost)
+		if err == nil {
+			dummyHashVal = h
+		}
+	})
+	return dummyHashVal
+}
+
+func randomTokenID() (string, error) {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
+}
+
+func signJWTWithID(key []byte, userID, username string, ver int, jti string, ttl time.Duration) (string, error) {
 	return jwt.NewWithClaims(jwt.SigningMethodHS256, authClaims{
 		Username: username,
 		Ver:      ver,
 		RegisteredClaims: jwt.RegisteredClaims{
+			ID:        jti,
 			Subject:   userID,
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(ttl)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
 		},
 	}).SignedString(key)
+}
+
+func signJWTTTL(key []byte, userID, username string, ver int, ttl time.Duration) (string, error) {
+	jti, err := randomTokenID()
+	if err != nil {
+		return "", err
+	}
+	return signJWTWithID(key, userID, username, ver, jti, ttl)
+}
+
+func requestIsHTTPS(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	if r.TLS != nil {
+		return true
+	}
+	return strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")), "https")
+}
+
+// setAuthCookie 把令牌写入 HttpOnly Cookie。前端不再需要把 JWT 存进
+// localStorage：XSS 即使能在同源执行，也读不到会话令牌。
+func setAuthCookie(w http.ResponseWriter, r *http.Request, token string, ttl time.Duration) {
+	if token == "" {
+		return
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     tokenCookieName,
+		Value:    token,
+		Path:     "/",
+		MaxAge:   int(ttl.Seconds()),
+		HttpOnly: true,
+		Secure:   requestIsHTTPS(r),
+		SameSite: http.SameSiteLaxMode,
+	})
+}
+
+func clearAuthCookie(w http.ResponseWriter, r *http.Request) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     tokenCookieName,
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,
+		HttpOnly: true,
+		Secure:   requestIsHTTPS(r),
+		SameSite: http.SameSiteLaxMode,
+	})
+}
+
+// issueToken 签发 JWT 并落一条服务端会话记录。只有 jti 仍存在于 auth_sessions
+// 的令牌才会被 requireAuth 接受。
+func (s *Server) issueToken(w http.ResponseWriter, r *http.Request, userID, username string, ver int) (string, error) {
+	if s.m == nil || s.m.pg == nil {
+		return "", errors.New("授权服务不可用")
+	}
+	jti, err := randomTokenID()
+	if err != nil {
+		return "", err
+	}
+	ttl := s.sessionTTL()
+	tok, err := signJWTWithID(s.currentJWTKey(), userID, username, ver, jti, ttl)
+	if err != nil {
+		return "", err
+	}
+	ua := ""
+	if r != nil {
+		ua = r.UserAgent()
+	}
+	ip := ""
+	if r != nil {
+		ip = clientIP(r)
+	}
+	if err := s.m.pg.CreateAuthSession(jti, userID, ver, time.Now().Add(ttl), ip, ua); err != nil {
+		return "", err
+	}
+	setAuthCookie(w, r, tok, ttl)
+	return tok, nil
 }
 
 func parseJWT(tokenStr string, key []byte) (*authClaims, bool) {
@@ -213,15 +321,29 @@ func (s *Server) requireAuth(h http.Handler) http.Handler {
 		}
 		claims, ok := parseJWT(extractToken(r), s.currentJWTKey())
 		if !ok {
+			clearAuthCookie(w, r)
 			writeErr(w, 401, "未授权或 token 已过期")
 			return
 		}
-		if strings.TrimSpace(claims.Subject) == "" {
+		if strings.TrimSpace(claims.Subject) == "" || strings.TrimSpace(claims.ID) == "" {
+			clearAuthCookie(w, r)
 			writeErr(w, 401, "登录状态已失效，请重新登录")
 			return
 		}
 		if s.m == nil || s.m.pg == nil {
 			writeErr(w, 503, "授权服务暂时不可用")
+			return
+		}
+		// 令牌必须对应一条服务端会话：仅有签名密钥不足以伪造管理员。
+		active, serr := s.m.pg.AuthSessionValid(claims.ID, claims.Subject, claims.Ver)
+		if serr != nil {
+			log.Printf("[auth] 会话校验失败: %v", serr)
+			writeErr(w, 503, "授权服务暂时不可用")
+			return
+		}
+		if !active {
+			clearAuthCookie(w, r)
+			writeErr(w, 401, "登录状态已失效，请重新登录")
 			return
 		}
 		acc, err := s.m.pg.ResolveRBACAccess(claims.Subject)
@@ -250,13 +372,17 @@ func (s *Server) requireAuth(h http.Handler) http.Handler {
 			writeErr(w, 403, "首次登录需先修改密码")
 			return
 		}
-		// 滑动续期：token 走过半程仍在活跃使用时补发新 token。
+		// 滑动续期：token 走过半程仍在活跃使用时补发新 token。同一 jti 每小时
+		// 最多续期一次，避免 Bearer 客户端每个请求都新建会话；旧会话按原 exp
+		// 自然过期，不做即时删除（并发请求可能仍带着旧令牌）。
 		if claims.ExpiresAt != nil {
 			ttl := s.sessionTTL()
-			if rem := time.Until(claims.ExpiresAt.Time); rem > 0 && rem < ttl/2 {
-				if fresh, err := signJWTTTL(s.currentJWTKey(), claims.Subject, claims.Username, acc.User.TokenVersion, ttl); err == nil {
+			if rem := time.Until(claims.ExpiresAt.Time); rem > 0 && rem < ttl/2 && s.m.pg.AuthSessionRenewable(claims.ID) {
+				if fresh, err := s.issueToken(w, r, claims.Subject, claims.Username, acc.User.TokenVersion); err == nil {
 					w.Header().Set("Access-Control-Expose-Headers", "X-Refresh-Token")
 					w.Header().Set("X-Refresh-Token", fresh)
+					// 不立即删除旧 jti：同一页面的并发请求可能仍带着旧 Cookie/Header，
+					// 删掉会让它们在续期瞬间 401。旧会话按原 exp 自然过期。
 				}
 			}
 		}
@@ -296,6 +422,7 @@ func (s *Server) bootstrapRBAC() {
 		log.Printf("[rbac] bootstrap 失败: %v", err)
 		return
 	}
+	s.m.pg.PruneExpiredAuthSessions()
 	if strings.TrimSpace(legacyHash) != "" {
 		log.Printf("[rbac] 多用户权限就绪（旧密码已迁移为 admin）")
 	} else {
@@ -326,6 +453,12 @@ func (s *Server) authInit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ip := clientIP(r)
+	// 首启端点未鉴权，必须限流，否则可被用于竞态抢占或密码喷洒。
+	if !s.loginLimiter.allow("init:"+ip, 10, 15*time.Minute) {
+		pg.RecordAudit("", "auth", "init", "fail", ip, "初始化端点触发频率限制", nil)
+		writeErr(w, 429, "尝试过于频繁，请稍后再试")
+		return
+	}
 	needs, err := pg.RBACNeedsBootstrap()
 	if err != nil {
 		pg.RecordAudit("", "auth", "init", "fail", ip, "初始化守卫查询失败（已拒绝）", nil)
@@ -352,8 +485,15 @@ func (s *Server) authInit(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, "密码加密失败")
 		return
 	}
-	if err := pg.BootstrapRBAC(string(hash), false); err != nil {
-		writeErr(w, 500, "初始化失败: "+err.Error())
+	created, err := pg.BootstrapRBACWithAdmin(string(hash), false)
+	if err != nil {
+		writeInternalError(w, "auth init bootstrap", err)
+		return
+	}
+	if !created {
+		// 并发 init 的失败者：密码没有真正写入，绝不能签发 admin 会话。
+		pg.RecordAudit("", "auth", "init", "fail", ip, "并发初始化：管理员已被其他请求创建", nil)
+		writeErr(w, 403, "已初始化")
 		return
 	}
 	_ = pg.SetSetting(authPassKey, string(hash)) // 兼容回滚
@@ -362,7 +502,7 @@ func (s *Server) authInit(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, "管理员创建失败")
 		return
 	}
-	tok, err := signJWTTTL(s.currentJWTKey(), u.ID, u.Username, u.TokenVersion, s.sessionTTL())
+	tok, err := s.issueToken(w, r, u.ID, u.Username, u.TokenVersion)
 	if err != nil {
 		writeErr(w, 500, "token 生成失败")
 		return
@@ -410,13 +550,18 @@ func (s *Server) authChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := pg.UpdateRBACUserPassword(u.ID, string(newHash)); err != nil {
-		writeErr(w, 500, "保存失败: "+err.Error())
+		writeInternalError(w, "auth change password", err)
 		return
+	}
+	// token_version 已递增；旧会话一并清掉，确保其它终端立即失效。
+	pg.DeleteAuthSessionsForUser(u.ID)
+	if claims.ID != "" {
+		pg.DeleteAuthSession(claims.ID)
 	}
 	pg.RecordAudit(u.Username, "auth", "change_password", "success", ip, "修改密码成功", nil)
 	fresh := ""
 	if nu, e := pg.GetRBACUserByID(u.ID); e == nil && nu != nil {
-		fresh, _ = signJWTTTL(s.currentJWTKey(), nu.ID, nu.Username, nu.TokenVersion, s.sessionTTL())
+		fresh, _ = s.issueToken(w, r, nu.ID, nu.Username, nu.TokenVersion)
 	}
 	writeJSON(w, 200, map[string]any{"ok": true, "token": fresh})
 }
@@ -444,31 +589,46 @@ func (s *Server) authLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u, err := pg.GetRBACUserByUsername(uname)
-	if err != nil || u == nil || !u.Enabled {
-		reason := "用户名或密码错误"
-		if u != nil && !u.Enabled {
-			reason = "账号已停用"
-		}
+	if err != nil || u == nil {
+		// 对不存在的账号也执行一次等价代价的 bcrypt，避免通过响应时间枚举用户。
+		_ = bcrypt.CompareHashAndPassword(dummyPasswordHash(), []byte(req.Password))
 		s.registerLoginFailure(pg, ip, uname)
-		pg.RecordAudit(uname, "auth", "login_failed", "fail", ip, reason, nil)
-		writeErr(w, 401, reason)
-		return
-	}
-	if err := bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(req.Password)); err != nil {
-		s.registerLoginFailure(pg, ip, u.Username)
-		pg.RecordAudit(u.Username, "auth", "login_failed", "fail", ip, "密码错误", nil)
+		pg.RecordAudit(uname, "auth", "login_failed", "fail", ip, "用户名或密码错误", nil)
 		writeErr(w, 401, "用户名或密码错误")
 		return
 	}
-	tok, err := signJWTTTL(s.currentJWTKey(), u.ID, u.Username, u.TokenVersion, s.sessionTTL())
+	// 停用账号也执行同样的 bcrypt 比对，避免通过响应文案/时序枚举账号状态。
+	pwErr := bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(req.Password))
+	if pwErr != nil || !u.Enabled {
+		reason := "密码错误"
+		if !u.Enabled {
+			reason = "账号已停用"
+		}
+		s.registerLoginFailure(pg, ip, u.Username)
+		pg.RecordAudit(u.Username, "auth", "login_failed", "fail", ip, reason, nil)
+		writeErr(w, 401, "用户名或密码错误")
+		return
+	}
+	tok, err := s.issueToken(w, r, u.ID, u.Username, u.TokenVersion)
 	if err != nil {
-		writeErr(w, 500, "token 生成失败")
+		writeInternalError(w, "auth login issue token", err)
 		return
 	}
 	s.loginLimiter.reset(ip, u.Username)
 	pg.RecordAudit(u.Username, "auth", "login", "success", ip, "登录成功", nil)
 	log.Printf("[auth] 登录成功 用户=%q ip=%s", u.Username, ip)
 	writeJSON(w, 200, map[string]any{"token": tok, "must_change_password": u.MustChangePassword})
+}
+
+// POST /api/auth/logout — 作废当前令牌并清除 HttpOnly Cookie。
+func (s *Server) authLogout(w http.ResponseWriter, r *http.Request) {
+	if s.m != nil && s.m.pg != nil {
+		if claims, ok := parseJWT(extractToken(r), s.currentJWTKey()); ok && claims.ID != "" {
+			s.m.pg.DeleteAuthSession(claims.ID)
+		}
+	}
+	clearAuthCookie(w, r)
+	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
 func (s *Server) registerLoginFailure(pg *db.DB, ip, username string) {
@@ -499,6 +659,10 @@ func remoteAddrIP(remoteAddr string) string {
 	}
 	return strings.Trim(strings.TrimSpace(remoteAddr), "[]")
 }
+
+// authSessionTestSink 仅被 _test.go 中的 signJWT 辅助函数使用：测试直接签
+// JWT 时也要落一条会话，才能通过新的 jti 校验。生产路径从不读取它。
+var authSessionTestSink *db.DB
 
 var trustedProxyNets = loopbackProxyNets()
 

@@ -11,7 +11,6 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { api } from "@/lib/api";
-import { auth } from "@/lib/auth";
 import type { ReportRecord, ReportSettings, ReportTemplate } from "@/lib/types";
 
 type TemplateForm = {
@@ -92,8 +91,8 @@ export default function ReportsPage() {
   }
 
   async function download(r: ReportRecord) {
-    const token = auth.getToken();
-    const res = await fetch(`/api/reports/${r.id}/download`, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+    // HttpOnly Cookie 由浏览器自动携带，前端不接触令牌。
+    const res = await fetch(`/api/reports/${r.id}/download`, { credentials: "same-origin" });
     if (!res.ok) { toast.error(`下载失败: ${res.status}`); return; }
     const blob = await res.blob();
     const url = URL.createObjectURL(blob);

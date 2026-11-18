@@ -175,6 +175,7 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		provByProfile:  map[int64]*provEntry{}, llmHealth: newLLMHealthRegistry(m.pg),
 		taskAgents: map[string]*taskAgentBundle{}, archiveWake: make(chan struct{}, 1)}
 	s.jwtKey.Store(key)
+	authSessionTestSink = s.m.pg
 	s.m.pg.EnsureKnowledgeVectorSchema()
 	if err := upgradeLegacyAssetAuthCredentials(s.m.pg); err != nil {
 		log.Printf("[credentials] 存量 auth 迁移失败: %v", err)
@@ -725,6 +726,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/auth/init", s.authInit)
 	mux.HandleFunc("POST /api/auth/login", s.authLogin)
 	mux.HandleFunc("POST /api/auth/change-password", s.authChangePassword)
+	mux.HandleFunc("POST /api/auth/logout", s.authLogout)
 
 	// RBAC / 审计
 	mux.HandleFunc("GET /api/rbac/me", s.rbacMe)
@@ -4432,6 +4434,7 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx, cancel := context.WithCancelCause(s.ctx)
+	ctx = agent.WithRunAdmin(ctx, s.engine.taskCreatorAdmin(t))
 	ctx = intercept.WithReviewContext(ctx, "", intercept.ReviewBackground{Source: intercept.BackgroundUserMessage, Text: req.Message})
 	s.chatBusy[t.ID] = true
 	s.chatCancel[t.ID] = cancel
@@ -4623,9 +4626,18 @@ func securityHeaders(next http.Handler) http.Handler {
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("X-Frame-Options", "DENY")
 		h.Set("Referrer-Policy", "no-referrer")
+		h.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
 		if strings.HasPrefix(r.URL.Path, "/api/") {
 			// 认证响应与业务数据一律不落缓存/代理日志快照。
 			h.Set("Cache-Control", "no-store")
+		} else {
+			// 前端静态页：禁止外连，XSS 即使执行也难以把令牌/数据外带。
+			// 不引入 nonce（静态导出无法按请求生成）；artifact 另用 sandbox CSP。
+			h.Set("Content-Security-Policy",
+				"default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; "+
+					"style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; "+
+					"font-src 'self' data:; connect-src 'self' ws: wss:; "+
+					"frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'")
 		}
 		next.ServeHTTP(w, r)
 	})

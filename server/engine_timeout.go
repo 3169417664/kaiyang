@@ -4,8 +4,8 @@ import (
 	"context"
 	"path/filepath"
 
-	"github.com/3169417664/kaiyang/intercept"
 	"fmt"
+	"github.com/3169417664/kaiyang/intercept"
 	"log"
 	"strconv"
 	"sync/atomic"
@@ -273,6 +273,9 @@ func (e *Engine) settleTask(ctx context.Context, t *Task) {
 //   - goal_met     planner 明确判定目标达成且无在跑意图（不再跑终局轮，直接 done）
 //   - auto_idle / auto_coverage / auto_rounds 程序化自动收尾（终态同样按目标达成情况判定）
 func (e *Engine) settleTaskWithReason(ctx context.Context, t *Task, reason, detail string) {
+	// 收尾轮同样遵守创建者权限：operator 的任务不能在 timeout/settle 阶段
+	// 通过 planner 的 Bash/Read 再获得宿主访问。
+	ctx = agent.WithRunAdmin(ctx, e.taskCreatorAdmin(t))
 	if !e.markSettling(t.ID, reason) {
 		return
 	}

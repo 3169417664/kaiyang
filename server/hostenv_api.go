@@ -23,7 +23,7 @@ import (
 )
 
 // 默认 socket 路径,与 hostd 单元里的 -socket 一致;可用环境变量覆盖。
-const defaultHostdSocket = "/run/pojun/hostd.sock"
+const defaultHostdSocket = "/run/kaiyang/hostd.sock"
 
 func hostdSocket() string {
 	if p := strings.TrimSpace(os.Getenv("POJUN_HOSTD_SOCKET")); p != "" {
@@ -104,7 +104,7 @@ func (s *Server) hostenvStatus(w http.ResponseWriter, r *http.Request) {
 		reason = "宿主助手未运行（未安装 pojun-hostd，或当前是 Docker 部署）"
 	}
 	writeJSON(w, 200, map[string]any{
-		"tools": hosttools.Inventory(),
+		"tools":       hosttools.Inventory(),
 		"deploy_mode": deployMode(),
 		"installer": map[string]any{
 			"available": present,

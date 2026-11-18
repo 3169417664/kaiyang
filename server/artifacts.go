@@ -173,7 +173,7 @@ func (s *Server) listTaskArtifacts(w http.ResponseWriter, r *http.Request) {
 	}
 	list, err := pg.ListTaskArtifacts(taskID)
 	if err != nil {
-		writeErr(w, 500, err.Error())
+		writeInternalError(w, "artifact", err)
 		return
 	}
 	if list == nil {
@@ -221,7 +221,7 @@ func (s *Server) patchTaskArtifact(w http.ResponseWriter, r *http.Request) {
 	}
 	updated, err := pg.UpdateTaskArtifactFinding(aid, req.FindingID)
 	if err != nil {
-		writeErr(w, 500, err.Error())
+		writeInternalError(w, "artifact", err)
 		return
 	}
 	writeJSON(w, 200, map[string]any{"artifact": updated})
@@ -253,17 +253,22 @@ func (s *Server) serveTaskArtifact(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, "attachment file missing")
 		return
 	}
-	// MIME 可能为空（历史登记/扫描补登记），此时按 kind 判断——否则图片会被
-	// 当成普通文件走 attachment，浏览器直接报错（v0.4.16 修复）。
-	isImage := a.Kind == "image" || strings.HasPrefix(strings.ToLower(a.Mime), "image/")
+	// 只允许真正的位图在浏览器里 inline 渲染。Kind/MIME 都来自 Agent 入参或扩展名
+	// 推断，绝不能让 text/html、SVG、XML 这类可执行内容借用 image 身份回放——
+	// 那会变成同源存储型 XSS，直接读走会话。
+	inlineMime := safeInlineImageMime(a.Name, a.Mime)
+	isImage := inlineMime != ""
 	q := r.URL.Query()
+	// 附件响应统一加 sandbox CSP：即使 MIME 判断出错，脚本也没有执行权。
+	w.Header().Set("Content-Security-Policy", "sandbox; default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	switch {
 	case isImage && q.Get("thumb") != "":
 		thumb := abs + ".thumb.jpg"
 		if _, err := os.Stat(thumb); err != nil {
 			if err := writeThumbnail(abs, thumb, 480); err != nil {
 				// 缩略图生成失败退回原图，至少能显示。
-				w.Header().Set("Content-Type", a.Mime)
+				w.Header().Set("Content-Type", inlineMime)
 				w.Header().Set("Cache-Control", "private, max-age=300")
 				http.ServeFile(w, r, abs)
 				return
@@ -273,15 +278,39 @@ func (s *Server) serveTaskArtifact(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "private, max-age=3600")
 		http.ServeFile(w, r, thumb)
 	case isImage && q.Get("download") == "":
-		w.Header().Set("Content-Type", a.Mime)
+		w.Header().Set("Content-Type", inlineMime)
 		w.Header().Set("Content-Disposition", "inline")
 		w.Header().Set("Cache-Control", "private, max-age=600")
 		http.ServeFile(w, r, abs)
 	default:
-		w.Header().Set("Content-Type", a.Mime)
+		// 非白名单位图一律强制下载 + octet-stream：浏览器不会把它当页面执行。
+		w.Header().Set("Content-Type", "application/octet-stream")
 		w.Header().Set("Content-Disposition", attachmentDisposition(sanitizeArtifactName(a.Name)))
 		http.ServeFile(w, r, abs)
 	}
+}
+
+// safeInlineImageMime 只放行浏览器按图片解码的静态位图格式。扩展名与登记的
+// MIME 必须同时指向同一类安全图片；任一不一致就退回下载。
+func safeInlineImageMime(name, mime string) string {
+	ext := strings.ToLower(filepath.Ext(name))
+	byExt := map[string]string{
+		".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+		".gif": "image/gif", ".webp": "image/webp", ".bmp": "image/bmp",
+		".avif": "image/avif", ".ico": "image/x-icon",
+	}
+	want, ok := byExt[ext]
+	if !ok {
+		return ""
+	}
+	got := strings.ToLower(strings.TrimSpace(strings.SplitN(mime, ";", 2)[0]))
+	if got == "" {
+		return want
+	}
+	if got == want || (want == "image/jpeg" && got == "image/jpg") {
+		return want
+	}
+	return ""
 }
 
 // writeThumbnail 生成 JPEG 缩略图（长边 maxEdge），写磁盘缓存。
@@ -413,7 +442,7 @@ func (s *Server) exportTaskArtifacts(w http.ResponseWriter, r *http.Request) {
 	}
 	list, err := pg.ListTaskArtifacts(taskID)
 	if err != nil {
-		writeErr(w, 500, err.Error())
+		writeInternalError(w, "artifact", err)
 		return
 	}
 	if len(list) == 0 {
@@ -526,6 +555,14 @@ func (s *Server) recordArtifactAbs(abs, taskKey string, findingID int64, name, k
 	kind = strings.ToLower(strings.TrimSpace(kind))
 	if kind == "" || kind == "auto" {
 		kind = autoKind
+	}
+	// 不允许调用方把非图片文件标成 image：inline 判定会读 Kind，历史/恶意登记
+	// 的 kind=image + report.html 曾可被当作 text/html 同源执行。
+	if kind == "image" && safeInlineImageMime(name, autoMime) == "" {
+		kind = autoKind
+	}
+	if m := safeInlineImageMime(name, autoMime); m != "" {
+		autoMime = m
 	}
 	dir := s.taskArtifactsDir(taskKey)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -640,7 +677,7 @@ func (s *Server) scanTaskArtifacts(w http.ResponseWriter, r *http.Request) {
 	taskID := r.PathValue("id")
 	added, skipped, truncated, err := s.scanTaskArtifactDir(taskID)
 	if err != nil {
-		writeErr(w, 500, err.Error())
+		writeInternalError(w, "artifact", err)
 		return
 	}
 	writeJSON(w, 200, map[string]any{

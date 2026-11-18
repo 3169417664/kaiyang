@@ -39,7 +39,7 @@ RUN if [ "$DEBIAN_MIRROR" != "deb.debian.org" ]; then \
 # Node 从 NodeSource 装 20.x：bookworm 自带的 apt nodejs 是 18，Playwright 要求 >=20。
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-         ca-certificates ripgrep curl wget vim git jq unzip \
+         ca-certificates gosu ripgrep curl wget vim git jq unzip \
          dnsutils iputils-ping netcat-openbsd inetutils-telnet whois nmap \
          imagemagick libreoffice-writer libreoffice-calc libreoffice-impress poppler-utils \
     && for pkg in masscan sqlmap hydra whatweb nikto ffuf john python3-impacket socat proxychains4; do \
@@ -82,6 +82,10 @@ RUN npm install -g @playwright/mcp@latest @playwright/cli@latest playwright@late
     && playwright install --with-deps chromium \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
+# 主服务以非 root 运行：hostd 仍由 entrypoint 以 root 启动（装工具需要），
+# 主进程只拿到数据目录与工具目录的读执行权限，F-01 的命令执行面不再等于容器 root。
+RUN groupadd --system --gid 10001 kaiyang \
+    && useradd --system --uid 10001 --gid kaiyang --home-dir /app --shell /usr/sbin/nologin kaiyang
 # 预编译好的对应架构二进制（dist/amd64/kaiyang 或 dist/arm64/kaiyang）
 COPY dist/${TARGETARCH}/kaiyang /app/kaiyang
 # 特权安装助手：容器内以 root 常驻 unix socket，「宿主环境」页可运行期装/重装工具；
@@ -112,7 +116,14 @@ RUN bash /tmp/install-tools.sh && rm -f /tmp/install-tools.sh
 # entrypoint：先后台拉起 hostd（root 常驻，「宿主环境」页一键装工具），再 exec start.sh
 COPY docker/docker-entrypoint.sh /app/docker-entrypoint.sh
 RUN chmod +x /app/docker-entrypoint.sh
-# data/（SQLite + jwt.key）持久化点
+# 运行期可写目录归主服务用户；主程序/技能/模板需要可写，才能支持页面一键更新
+# 与 nuclei 模板 git pull。但 hostd 与 entrypoint 必须以 root 身份启动，保持
+# root-owned，否则主服务被攻破后可替换它们、等容器重启时拿到 root。
+RUN mkdir -p /app/data /app/nuclei-templates \
+    && chown -R kaiyang:kaiyang /app \
+    && chown root:root /app/kaiyang-hostd /app/docker-entrypoint.sh \
+    && chmod 0755 /app/kaiyang-hostd /app/docker-entrypoint.sh
+# data/（PostgreSQL 之外的工作区、jwt.key、报告资产）持久化点
 VOLUME ["/app/data"]
 EXPOSE 8787 8788
 ENTRYPOINT ["/app/docker-entrypoint.sh"]
