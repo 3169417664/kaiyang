@@ -62,6 +62,7 @@ import type {
   KnowledgeDoc,
   KnowledgeHit,
   KnowledgeConfig,
+  TopologyData,
   IntentAsset,
   InterceptApprovalFilter,
   InterceptApprovalRow,
@@ -1103,6 +1104,15 @@ export const api = {
     if (!r.ok) throw new Error(`report: ${r.status}`);
     return r.text();
   },
+  // ---- 内网拓扑 ----
+  topology: (taskId: string) => get<TopologyData>(`/tasks/${encodeURIComponent(taskId)}/topology`),
+  upsertTopologyNode: (taskId: string, n: { ip: string; hostname?: string; display_label?: string; notes?: string; x?: number; y?: number }) =>
+    post<{ ok: boolean }>(`/tasks/${encodeURIComponent(taskId)}/topology/nodes`, n),
+  deleteTopologyNode: (taskId: string, ip: string) =>
+    del<{ ok: boolean }>(`/tasks/${encodeURIComponent(taskId)}/topology/nodes/${encodeURIComponent(ip)}`),
+  addTopologyEdge: (taskId: string, e: { src_ip: string; dst_ip: string; label?: string }) =>
+    post<{ id: number }>(`/tasks/${encodeURIComponent(taskId)}/topology/edges`, e),
+
   // ---- 知识库 ----
   knowledgeDocs: (scope = "global", task?: string) => {
     const q = new URLSearchParams({ scope });

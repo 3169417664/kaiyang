@@ -1863,3 +1863,62 @@ CREATE TABLE IF NOT EXISTS knowledge_config (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 INSERT INTO knowledge_config (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
+
+-- ── §FUSION-E  资产凭据 / 内网拓扑 ──────────────────────────────────────
+CREATE TABLE IF NOT EXISTS asset_credentials (
+    id         BIGSERIAL PRIMARY KEY,
+    cred_type  TEXT NOT NULL DEFAULT 'unknown',
+    username   TEXT NOT NULL DEFAULT '',
+    domain     TEXT NOT NULL DEFAULT '',
+    secret     TEXT NOT NULL DEFAULT '',
+    extra      JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (cred_type, username, domain, secret)
+);
+CREATE TABLE IF NOT EXISTS asset_credential_links (
+    credential_id BIGINT NOT NULL REFERENCES asset_credentials(id) ON DELETE CASCADE,
+    asset_id      BIGINT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+    relation      TEXT NOT NULL CHECK (relation IN ('discovered','verified')),
+    target        TEXT NOT NULL DEFAULT '',
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (credential_id, asset_id, relation)
+);
+CREATE INDEX IF NOT EXISTS idx_asset_credential_links_asset ON asset_credential_links(asset_id);
+
+CREATE TABLE IF NOT EXISTS task_topology_groups (
+    id BIGSERIAL PRIMARY KEY,
+    task_id BIGINT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    name TEXT NOT NULL DEFAULT '',
+    color TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS task_topology_nodes (
+    task_id BIGINT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    ip TEXT NOT NULL,
+    hostname TEXT NOT NULL DEFAULT '',
+    display_label TEXT NOT NULL DEFAULT '',
+    group_id BIGINT REFERENCES task_topology_groups(id) ON DELETE SET NULL,
+    x DOUBLE PRECISION NOT NULL DEFAULT 0,
+    y DOUBLE PRECISION NOT NULL DEFAULT 0,
+    notes TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (task_id, ip)
+);
+CREATE TABLE IF NOT EXISTS task_topology_edges (
+    id BIGSERIAL PRIMARY KEY,
+    task_id BIGINT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    src_ip TEXT NOT NULL,
+    dst_ip TEXT NOT NULL,
+    label TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS task_topology_notes (
+    id BIGSERIAL PRIMARY KEY,
+    task_id BIGINT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    content TEXT NOT NULL DEFAULT '',
+    x DOUBLE PRECISION NOT NULL DEFAULT 0,
+    y DOUBLE PRECISION NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);

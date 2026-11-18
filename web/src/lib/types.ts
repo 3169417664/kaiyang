@@ -2103,3 +2103,26 @@ export interface KnowledgeConfig {
   has_key?: boolean;
   dim: number;
 }
+
+// ---- 内网拓扑（KAIYANG Phase 7）----
+export interface TopologyNode {
+  ip: string;
+  hostname: string;
+  display_label: string;
+  group_id?: number;
+  x: number;
+  y: number;
+  notes: string;
+}
+export interface TopologyEdge {
+  id: number;
+  src_ip: string;
+  dst_ip: string;
+  label: string;
+}
+export interface TopologyData {
+  nodes: TopologyNode[];
+  edges: TopologyEdge[];
+  groups: Array<{ id: number; name: string; color: string }>;
+  notes: Array<{ id: number; content: string; x: number; y: number }>;
+}

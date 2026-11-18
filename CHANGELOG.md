@@ -4,6 +4,13 @@
 
 ## [Unreleased]
 
+### 新增（KAIYANG Phase 7：资产凭据 + 内网拓扑）
+
+- **资产凭据模型**：`asset_credentials` + `asset_credential_links`（discovered/verified），
+  存量 `assets.auth` 一次性迁移；`record_credential` / `mark_credential_verified` 工具；
+  `GET /api/credentials/intranet`（secret 不下发）。
+- **内网拓扑**：任务内节点/边/分组/便签表与 API；任务详情新增「拓扑」Tab（节点管理）。
+
 ### 新增（KAIYANG Phase 6：知识库）
 
 - **双层 RAG**：全局知识库 + 任务级知识库；文档分块、embedding、pgvector 语义检索。
