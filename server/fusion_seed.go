@@ -30,10 +30,12 @@ func (s *Server) seedFusion() {
 	reviewDefault := map[string]bool{
 		"内网渗透": true, "权限提升": true, "漏洞利用": true,
 	}
-	plannerBody := agent.PlannerDefaultTemplateBody()
-	workerBody := agent.WorkerDefaultTemplateBody()
+	plannerBase := agent.PlannerDefaultTemplateBody()
+	workerBase := agent.WorkerDefaultTemplateBody()
 	for _, name := range names {
 		nkey := name
+		plannerBody := plannerBase + domainPromptTail(name, "planner")
+		workerBody := workerBase + domainPromptTail(name, "worker")
 		if err := s.m.pg.SeedPromptTemplate("planner", name, nkey, plannerBody, name == "外网渗透"); err != nil {
 			log.Printf("[seed] planner template %s: %v", name, err)
 		}
@@ -55,6 +57,7 @@ func (s *Server) seedFusion() {
 			SET default_planner_template_id=$1, default_worker_template_id=$2
 			WHERE nkey=$3 AND COALESCE(default_planner_template_id,0)=0`, pt.ID, wt.ID, name)
 	}
+	s.upgradeBuiltinTemplateBodies(names, plannerBase, workerBase)
 }
 
 // seedFusionAgents 必须在 orchestration tools seed 之后调用，否则工具绑定找不到行。
@@ -138,5 +141,49 @@ func (s *Server) seedOptionalAgent(key, name, desc, prompt string, tools []strin
 	}
 	if err := s.m.pg.AddAgentToToolBinding(key, tools); err != nil {
 		log.Printf("[seed] agent %s tools: %v", key, err)
+	}
+}
+
+// domainPromptTail 给模板库默认正文追加场景差异（Pojun 硬尾仍由代码追加）。
+func domainPromptTail(name, role string) string {
+	who := "规划者"
+	if role == "worker" {
+		who = "执行者"
+	}
+	switch name {
+	case "外网渗透":
+		return "\n\n【场景：外网渗透】作为" + who + "，先完成资产发现与业务面测绘（域名/子域/端口/站点/端点/指纹），再逐步下钻未授权面与业务逻辑；不做无依据的深度利用跳跃。"
+	case "内网渗透":
+		return "\n\n【场景：内网渗透】作为" + who + "，以已取得或可验证的立足点为起点：先确认主机权限与网络可达面，再收集凭据、识别域/内网服务、规划横向路径；每一步保留证据与 [投放] 事实。"
+	case "权限提升":
+		return "\n\n【场景：权限提升】作为" + who + "，围绕当前权限级别枚举本地提权面（内核/服务/计划任务/凭据/配置/容器），优先选择可复现、低破坏的路径，并记录前后权限对比证据。"
+	case "漏洞利用":
+		return "\n\n【场景：漏洞利用】作为" + who + "，围绕已确认漏洞构造可复现利用链：先证影响（读取/执行/越权范围），再评估横向与持久化可行性；不把「存在漏洞」当作终点。"
+	case "漏洞挖掘":
+		return "\n\n【场景：漏洞挖掘】作为" + who + "，以攻击面发现和变体挖掘为主：列出输入点、参数、状态机与权限边界，系统化测试注入/越权/逻辑/文件类问题，并去重归并。"
+	case "代码审计":
+		return "\n\n【场景：代码审计】作为" + who + "，先定位入口、路由、鉴权与数据流，再按污点传播审计注入/反序列化/文件/SSRF/越权；每条结论给出代码位置与可达路径。"
+	}
+	return ""
+}
+
+// upgradeBuiltinTemplateBodies 把旧版「所有场景共用同一正文」的内置模板升级为场景差异化正文；
+// 只替换逐字等于旧默认的记录，用户编辑过的不动。
+func (s *Server) upgradeBuiltinTemplateBodies(names []string, plannerBase, workerBase string) {
+	for _, name := range names {
+		for _, kind := range []string{"planner", "worker"} {
+			tpl, err := s.m.pg.GetPromptTemplateByNKey(kind, name)
+			if err != nil || tpl == nil || !tpl.Builtin {
+				continue
+			}
+			base := plannerBase
+			if kind == "worker" {
+				base = workerBase
+			}
+			if strings.TrimSpace(tpl.Body) != strings.TrimSpace(base) {
+				continue
+			}
+			_ = s.m.pg.UpdatePromptTemplate(kind, tpl.ID, tpl.Name, base+domainPromptTail(name, kind))
+		}
 	}
 }

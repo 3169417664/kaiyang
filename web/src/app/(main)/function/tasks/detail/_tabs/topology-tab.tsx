@@ -22,6 +22,7 @@ import {
   useNodesState,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
+import dagre from "@dagrejs/dagre";
 import {
   DownloadIcon,
   LinkIcon,
@@ -59,6 +60,25 @@ type NoteRFNode = RFNode<NoteNodeData, "note">;
 type TopoRFNode = DeviceRFNode | NoteRFNode;
 
 const DEFAULT_GROUP_COLOR = "#3b82f6";
+
+// dagreAutoLayout 为「所有节点坐标都为 0」的新拓扑计算分层坐标。
+// 已有坐标（用户拖拽过/手工布局）一律以数据库为准。
+function dagreAutoLayout(nodes: TopologyNode[], edges: TopologyEdge[]): Map<string, { x: number; y: number }> {
+	const g = new dagre.graphlib.Graph();
+	g.setGraph({ rankdir: "LR", nodesep: 48, ranksep: 96, marginx: 32, marginy: 32 });
+	g.setDefaultEdgeLabel(() => ({}));
+	for (const n of nodes) g.setNode(n.ip, { width: 210, height: 76 });
+	for (const e of edges) {
+		if (g.hasNode(e.src_ip) && g.hasNode(e.dst_ip)) g.setEdge(e.src_ip, e.dst_ip);
+	}
+	dagre.layout(g);
+	const out = new Map<string, { x: number; y: number }>();
+	for (const n of nodes) {
+		const p = g.node(n.ip);
+		if (p) out.set(n.ip, { x: Math.round(p.x - 105), y: Math.round(p.y - 38) });
+	}
+	return out;
+}
 
 function DeviceNode({ data, selected }: NodeProps<DeviceRFNode>) {
   return (
@@ -176,13 +196,15 @@ export function TopologyTab({ taskId, categoryName }: { taskId: string; category
   const groupsById = React.useMemo(() => new Map(data.groups.map((g) => [g.id, g])), [data.groups]);
 
   React.useEffect(() => {
+    const needsLayout = data.nodes.length > 1 && data.nodes.every((n) => n.x === 0 && n.y === 0);
+    const auto = needsLayout ? dagreAutoLayout(data.nodes, data.edges) : null;
     setRfNodes([
       ...data.nodes.map((n) => {
         const g = n.group_id ? groupsById.get(n.group_id) : undefined;
         return {
           id: n.ip,
           type: "topo" as const,
-          position: { x: n.x, y: n.y },
+          position: auto?.get(n.ip) ?? { x: n.x, y: n.y },
           data: {
             ip: n.ip,
             hostname: n.hostname,
