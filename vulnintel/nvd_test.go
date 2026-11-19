@@ -95,9 +95,9 @@ func TestToCVENoMetrics(t *testing.T) {
 
 func TestCPEVendorProduct(t *testing.T) {
 	cases := []struct {
-		in             string
+		in              string
 		vendor, product string
-		ok             bool
+		ok              bool
 	}{
 		{"cpe:2.3:a:apache:http_server:2.4.49:*:*:*:*:*:*:*", "apache", "http_server", true},
 		{"cpe:2.3:o:linux:linux_kernel:5.4:*:*:*:*:*:*:*", "linux", "linux_kernel", true},
@@ -129,16 +129,16 @@ func TestSplitUnescapedColons(t *testing.T) {
 // 这是「查到 CVE → 提示对应方法论 skill」联动（M1 闭环）的 NVD 侧入口。
 func TestToCVEParsesWeaknesses(t *testing.T) {
 	wrap := nvdWrapper{CVE: nvdCVE{
-		ID:        "CVE-2026-9999",
-		Published: "2026-10-01T00:00:00.000",
+		ID:           "CVE-2026-9999",
+		Published:    "2026-10-01T00:00:00.000",
 		Descriptions: []nvdDescription{{Lang: "en", Value: "SQL injection in the admin console."}},
 		Weaknesses: []nvdWeakness{
 			{Description: []nvdDescription{{Lang: "en", Value: "CWE-89"}}},
-			{Description: []nvdDescription{{Lang: "en", Value: "CWE-89"}}},   // 重复（不同 source 常见）
-			{Description: []nvdDescription{{Lang: "en", Value: "cwe-79"}}},  // 小写 → 归一
-			{Description: []nvdDescription{{Lang: "en", Value: "NVD-CWE-OTHER"}}}, // 占位 → 丢弃
-			{Description: []nvdDescription{{Lang: "en", Value: "NVD-CWE-noinfo"}}},// 占位 → 丢弃
-			{Description: []nvdDescription{{Lang: "zh", Value: "CWE-200"}}}, // 非 en → 丢弃
+			{Description: []nvdDescription{{Lang: "en", Value: "CWE-89"}}},         // 重复（不同 source 常见）
+			{Description: []nvdDescription{{Lang: "en", Value: "cwe-79"}}},         // 小写 → 归一
+			{Description: []nvdDescription{{Lang: "en", Value: "NVD-CWE-OTHER"}}},  // 占位 → 丢弃
+			{Description: []nvdDescription{{Lang: "en", Value: "NVD-CWE-noinfo"}}}, // 占位 → 丢弃
+			{Description: []nvdDescription{{Lang: "zh", Value: "CWE-200"}}},        // 非 en → 丢弃
 		},
 	}}
 	c, ok := ToCVE(wrap)

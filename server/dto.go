@@ -196,15 +196,15 @@ type TaskNodeDTO struct {
 
 func taskNodeDTO(n *db.Node) TaskNodeDTO {
 	d := TaskNodeDTO{
-		ID:           i64s(n.ID),
-		Type:         n.Kind,
-		Payload:      rawString(n.Payload),
-		DeleteReason: n.DeleteReason,
+		ID:            i64s(n.ID),
+		Type:          n.Kind,
+		Payload:       rawString(n.Payload),
+		DeleteReason:  n.DeleteReason,
 		BlockedReason: n.BlockedReason,
-		Priority:     n.Priority,
-		State:        n.State,
-		Origin:       n.Origin,
-		TS:           rfc3339(n.CreatedAt),
+		Priority:      n.Priority,
+		State:         n.State,
+		Origin:        n.Origin,
+		TS:            rfc3339(n.CreatedAt),
 	}
 	if n.SourceTaskID > 0 {
 		d.SourceTaskID = i64s(n.SourceTaskID)
@@ -243,8 +243,8 @@ func goalDTO(n *db.Node) GoalDTO {
 		Unverified:       p.Unverified,
 		UnverifiedReason: p.UnverifiedReason,
 		State:            n.State,
-		Origin:    n.Origin,
-		TS:        rfc3339(n.CreatedAt),
+		Origin:           n.Origin,
+		TS:               rfc3339(n.CreatedAt),
 	}
 }
 

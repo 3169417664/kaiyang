@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	actool "github.com/Autumn-27/norma/tool"
 	"github.com/3169417664/kaiyang/agent"
 	"github.com/3169417664/kaiyang/db"
+	actool "github.com/Autumn-27/norma/tool"
 )
 
 func names(tools []actool.CoreTool) map[string]actool.CoreTool {

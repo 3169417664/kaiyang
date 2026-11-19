@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/3169417664/kaiyang/hostd"
 	"github.com/3169417664/kaiyang/hosttools"
 	"github.com/3169417664/kaiyang/proxyprobe"
 	"github.com/3169417664/kaiyang/selfupdate"
@@ -96,6 +97,45 @@ func (s *Server) maintenanceProxy() string {
 	return s.m.GlobalProxy()
 }
 
+const settingHostInstallSources = "host_install_sources"
+
+func (s *Server) hostInstallSources() (hostd.InstallSources, error) {
+	var sources hostd.InstallSources
+	if s.m == nil || s.m.pg == nil {
+		return sources, nil
+	}
+	raw, ok, err := s.m.pg.GetSetting(settingHostInstallSources)
+	if err != nil || !ok || raw == "" {
+		return sources, err
+	}
+	if err := json.Unmarshal([]byte(raw), &sources); err != nil {
+		return sources, err
+	}
+	return sources, sources.Validate()
+}
+
+func (s *Server) hostenvSaveSources(w http.ResponseWriter, r *http.Request) {
+	var sources hostd.InstallSources
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&sources); err != nil {
+		writeErr(w, http.StatusBadRequest, "安装源设置格式错误")
+		return
+	}
+	if err := sources.Validate(); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if s.m == nil || s.m.pg == nil {
+		writeErr(w, http.StatusServiceUnavailable, "设置存储不可用")
+		return
+	}
+	raw, _ := json.Marshal(sources)
+	if err := s.m.pg.SetSetting(settingHostInstallSources, string(raw)); err != nil {
+		writeErr(w, http.StatusInternalServerError, "保存安装源设置失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, sources)
+}
+
 // hostenvStatus 体检页的总入口:工具清单 + 是否支持一键安装。
 func (s *Server) hostenvStatus(w http.ResponseWriter, r *http.Request) {
 	ver, present := s.hostdVersion(r.Context())
@@ -112,9 +152,11 @@ func (s *Server) hostenvStatus(w http.ResponseWriter, r *http.Request) {
 			"version":   ver,
 			// 老助手（0.3.22 之前）既不上报版本也没有 /self-upgrade，自己换不了装，
 			// 需要运维重跑一次 install.sh 引导；之后就能自动跟随主程序升级。
-			"upgrade_required": present && ver == "",
-			"socket":           hostdSocket(),
-			"proxy":            s.installProxy(), // 回显当前安装代理,前端可编辑
+			"upgrade_required":  present && ver == "",
+			"socket":            hostdSocket(),
+			"proxy":             s.installProxy(), // 回显当前安装代理,前端可编辑
+			"sources":           func() hostd.InstallSources { v, _ := s.hostInstallSources(); return v }(),
+			"sources_supported": present,
 		},
 	})
 }
@@ -137,11 +179,18 @@ func (s *Server) hostenvInstall(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "未知工具: "+req.ID)
 		return
 	}
-	payload, _ := json.Marshal(map[string]string{
+	tool, _ := hosttools.Lookup(req.ID)
+	sources, _ := s.hostInstallSources()
+	path := "/jobs"
+	if (tool.Kind == hosttools.KindApt && sources.APT != "") || (tool.Kind == hosttools.KindPip && sources.PyPI != "") {
+		path = "/jobs/with-sources"
+	}
+	payload, _ := json.Marshal(map[string]any{
 		"tool_id": req.ID,
 		"proxy":   s.installProxy(),
+		"sources": sources,
 	})
-	body, code, err := s.hostdCall(r.Context(), http.MethodPost, "/jobs", payload)
+	body, code, err := s.hostdCall(r.Context(), http.MethodPost, path, payload)
 	if err != nil {
 		writeErr(w, 503, err.Error())
 		return
@@ -195,8 +244,14 @@ func (s *Server) hostenvInstallBatch(w http.ResponseWriter, r *http.Request) {
 			skipped = append(skipped, skip{ToolID: id, Reason: "未知工具"})
 			continue
 		}
-		payload, _ := json.Marshal(map[string]string{"tool_id": id, "proxy": proxy})
-		body, code, err := s.hostdCall(r.Context(), http.MethodPost, "/jobs", payload)
+		tool, _ := hosttools.Lookup(id)
+		sources, _ := s.hostInstallSources()
+		path := "/jobs"
+		if (tool.Kind == hosttools.KindApt && sources.APT != "") || (tool.Kind == hosttools.KindPip && sources.PyPI != "") {
+			path = "/jobs/with-sources"
+		}
+		payload, _ := json.Marshal(map[string]any{"tool_id": id, "proxy": proxy, "sources": sources})
+		body, code, err := s.hostdCall(r.Context(), http.MethodPost, path, payload)
 		if err != nil {
 			// 助手整体不可用：没必要继续打剩下的一定也失败。
 			writeErr(w, 503, err.Error())

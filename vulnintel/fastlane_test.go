@@ -73,7 +73,7 @@ func TestVersionRangeUndeterminedDetection(t *testing.T) {
 
 	// 有明确版本区间的（真实 NVD 形态）。
 	withRange := CVE{
-		ID: "CVE-2021-41773",
+		ID:       "CVE-2021-41773",
 		Criteria: []string{"cpe:2.3:a:apache:http_server:2.4.49:*:*:*:*:*:*:*"},
 		Ranges: []CPERange{{
 			Criteria:       "cpe:2.3:a:apache:http_server:2.4.49:*:*:*:*:*:*:*",

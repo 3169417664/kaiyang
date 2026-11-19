@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Autumn-27/norma/llm"
 	"github.com/3169417664/kaiyang/intercept"
+	"github.com/Autumn-27/norma/llm"
 )
 
 // scriptedProvider 按脚本返回内容，并记录每次调用的 MaxTokens。

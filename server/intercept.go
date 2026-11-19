@@ -569,11 +569,11 @@ func (s *Server) interceptJudgeUsage(w http.ResponseWriter, r *http.Request) {
 // --- helpers ---
 
 type interceptRuleReq struct {
-	Name           string    `json:"name"`
-	Enabled        bool      `json:"enabled"`
-	Priority       int       `json:"priority"`
-	MatchTarget    string    `json:"match_target"`
-	MatchType      string    `json:"match_type"`
+	Name        string `json:"name"`
+	Enabled     bool   `json:"enabled"`
+	Priority    int    `json:"priority"`
+	MatchTarget string `json:"match_target"`
+	MatchType   string `json:"match_type"`
 	// ToolScope 是本规则适用的工具名列表；缺省（nil）表示不修改，空数组表示不限工具。
 	// 用指针区分「没传」与「传了空数组」——否则旧客户端编辑规则时会静默清空范围。
 	ToolScope      *[]string `json:"tool_scope"`

@@ -23,6 +23,7 @@ import (
 
 	"github.com/3169417664/kaiyang/agent"
 	"github.com/3169417664/kaiyang/db"
+	"github.com/3169417664/kaiyang/egress"
 	"github.com/3169417664/kaiyang/hostd"
 	"github.com/3169417664/kaiyang/intercept"
 	"github.com/3169417664/kaiyang/listener"
@@ -30,6 +31,7 @@ import (
 	"github.com/3169417664/kaiyang/llmrec"
 	"github.com/3169417664/kaiyang/report"
 	"github.com/3169417664/kaiyang/traffic"
+	"github.com/3169417664/kaiyang/vault"
 	"github.com/Autumn-27/norma/llm"
 	actool "github.com/Autumn-27/norma/tool"
 	"github.com/Autumn-27/norma/transcript"
@@ -68,6 +70,10 @@ type Server struct {
 	// listeners 是红队回连接收器管理器（listener 包）：接住反弹 shell/OOB 回连
 	// 并留证。绑定端口无需特权（1024+），不经 hostd。
 	listeners *listener.Manager
+	// vault 是凭据保险库（加密存储 SSH 跳板密码/私钥等）。
+	vault *vault.Store
+	// egress 是 SSH 跳板管理器：本地 SOCKS5 → 跳板机出网。
+	egress *egress.Manager
 
 	// concMu serializes concurrency-cap decisions (admission + reconcile) so a
 	// scheduler tick and an HTTP settings change / task creation can't both count
@@ -191,6 +197,14 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 	}
 	s.listeners = listener.NewManager()
 	agent.SetListenerManager(s.listeners)
+	s.egress = egress.NewManager()
+	if m.pg != nil {
+		if vs, verr := vault.Open(keyDir, dataDir, m.pg); verr != nil {
+			log.Printf("[vault] 初始化失败（凭据保险库不可用）: %v", verr)
+		} else {
+			s.vault = vs
+		}
+	}
 	agent.SetConnectBackResolver(func(port int) agent.ConnectBack {
 		cb := s.ResolveConnectBack(port)
 		return agent.ConnectBack{Mode: cb.Mode, LHOST: cb.LHOST, LPORT: cb.LPORT, Via: cb.Via}
@@ -727,6 +741,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/auth/login", s.authLogin)
 	mux.HandleFunc("POST /api/auth/change-password", s.authChangePassword)
 	mux.HandleFunc("POST /api/auth/logout", s.authLogout)
+	mux.HandleFunc("POST /api/auth/revoke-current", s.authRevokeCurrent)
+	mux.HandleFunc("POST /api/auth/revoke-all", s.authRevokeAll)
 
 	// RBAC / 审计
 	mux.HandleFunc("GET /api/rbac/me", s.rbacMe)
@@ -942,6 +958,18 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/proxypool", s.proxyPoolPut)
 	mux.HandleFunc("POST /api/proxypool/bulk", s.proxyPoolBulk)
 	mux.HandleFunc("POST /api/proxypool/check", s.proxyPoolCheck)
+	mux.HandleFunc("GET /api/proxypool/mihomo", s.proxyPoolMihomoStatus)
+	mux.HandleFunc("POST /api/proxypool/mihomo/install", s.proxyPoolMihomoInstall)
+	mux.HandleFunc("POST /api/proxypool/mihomo/start", s.proxyPoolMihomoStart)
+	mux.HandleFunc("POST /api/proxypool/mihomo/delays", s.proxyPoolMihomoDelays)
+	mux.HandleFunc("POST /api/proxypool/mihomo/stop", s.proxyPoolMihomoStop)
+	mux.HandleFunc("GET /api/egress/ssh", s.listSSHProviders)
+	mux.HandleFunc("POST /api/egress/ssh", s.createSSHProvider)
+	mux.HandleFunc("DELETE /api/egress/ssh/{id}", s.deleteSSHProvider)
+	mux.HandleFunc("POST /api/egress/ssh/{id}/start", s.startSSHProvider)
+	mux.HandleFunc("POST /api/egress/ssh/{id}/stop", s.stopSSHProvider)
+	mux.HandleFunc("POST /api/egress/ssh/{id}/use", s.useSSHProvider)
+	mux.HandleFunc("GET /api/diagnostics/export", s.handleDiagnosticsExport)
 	mux.HandleFunc("POST /api/settings/web-search/test", s.testWebSearch)
 	mux.HandleFunc("GET /api/credentials/intranet", s.getIntranetCredentials)
 	mux.HandleFunc("GET /api/knowledge", s.listKnowledge)
@@ -987,6 +1015,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/listeners", s.listenerStart)
 	mux.HandleFunc("GET /api/listeners/{name}", s.listenerSessions)
 	mux.HandleFunc("POST /api/listeners/{name}/stop", s.listenerStop)
+	mux.HandleFunc("PUT /api/hostenv/sources", s.hostenvSaveSources)
 	mux.HandleFunc("POST /api/hostenv/install", s.hostenvInstall)
 	mux.HandleFunc("POST /api/hostenv/install-batch", s.hostenvInstallBatch)
 	mux.HandleFunc("GET /api/hostenv/jobs/{id}", s.hostenvJob)

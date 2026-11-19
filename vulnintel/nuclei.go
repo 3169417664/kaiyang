@@ -11,6 +11,7 @@ package vulnintel
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -115,6 +116,8 @@ type ScanArgs struct {
 	CVEID        string        // optional: restrict to templates mentioning this CVE
 	Severity     string        // optional: comma list critical,high,medium,low
 	TimeoutTotal time.Duration // whole-run ceiling (default 10m, cap 30m)
+	// Proxy 是出口代理 URL（可空）。空=直连，命令里不出现 -proxy。
+	Proxy string
 }
 
 // BuildNucleiCmd assembles the nuclei invocation. Templates restricted to the
@@ -122,6 +125,37 @@ type ScanArgs struct {
 // (offline-friendly, version-pinned); -silent keeps output parseable; JSONL
 // output goes to stdout for the agent to read. The returned cancel MUST be
 // called by the caller after the run (it bounds the whole-run ceiling).
+// EffectiveTimeout 归一化整轮超时：<=0 用 10m，>30m 钳到 30m。
+func EffectiveTimeout(d time.Duration) time.Duration {
+	if d <= 0 {
+		return 10 * time.Minute
+	}
+	if d > 30*time.Minute {
+		return 30 * time.Minute
+	}
+	return d
+}
+
+// normalizeNucleiProxy 把工具集出口代理归一化成 nuclei -proxy 接受的形式：
+// 缺 scheme 才补 http://，空=直连不发射；逗号拒绝（-proxy 是 string[]）。
+func normalizeNucleiProxy(raw string) (string, error) {
+	p := strings.TrimSpace(raw)
+	if p == "" {
+		return "", nil
+	}
+	if strings.Contains(p, ",") {
+		return "", fmt.Errorf("代理地址含逗号(%q): nuclei 会按多代理拆分", p)
+	}
+	if !strings.Contains(p, "://") {
+		p = "http://" + p
+	}
+	u, err := url.Parse(p)
+	if err != nil || u.Host == "" || u.Port() == "" {
+		return "", fmt.Errorf("代理地址缺少合法 host:port: %q", raw)
+	}
+	return p, nil
+}
+
 func BuildNucleiCmd(ctx context.Context, templatesDir string, a ScanArgs) (*exec.Cmd, context.CancelFunc, error) {
 	if strings.TrimSpace(a.Target) == "" {
 		return nil, nil, fmt.Errorf("target 不能为空")
@@ -145,6 +179,12 @@ func BuildNucleiCmd(ctx context.Context, templatesDir string, a ScanArgs) (*exec
 		"-silent",
 		"-no-color",
 		"-disable-update-check",
+	}
+	if prox, perr := normalizeNucleiProxy(a.Proxy); perr != nil {
+		cancel()
+		return nil, nil, perr
+	} else if prox != "" {
+		args = append(args, "-proxy", prox)
 	}
 	if cve := strings.TrimSpace(a.CVEID); cve != "" {
 		templates := FindNucleiTemplates(templatesDir, cve)

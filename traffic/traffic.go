@@ -30,11 +30,11 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/sirupsen/logrus"
 	"github.com/3169417664/kaiyang/db"
 	"github.com/Autumn-27/norma/permission"
 	actool "github.com/Autumn-27/norma/tool"
 	mproxy "github.com/lqqyt2423/go-mitmproxy/proxy"
+	"github.com/sirupsen/logrus"
 	_ "modernc.org/sqlite"
 )
 
@@ -179,6 +179,12 @@ type Traffic struct {
 	// pool 非空时代理池优先于 upstream:per-request 按策略轮换上游,
 	// 失败(RequestError)计数熔断。见 pool.go。
 	pool atomic.Pointer[selector]
+	// strictEgress=true 时，池已配置但全部熔断不再回退直连/全局代理，而是让请求
+	// 失败（fail-closed）：用户配置了代理就绝不允许流量从真实 IP 漏出去。
+	strictEgress atomic.Bool
+	// directRecordFallback=true 时，严格出口+池全部熔断的情况下允许「直连但仍录制」：
+	// 目标请求不暴露给池，但会暴露真实出口 IP——由运维显式开启。
+	directRecordFallback atomic.Bool
 	// lastPick 记录 host → 最近一次为它选中的池上游(Pick 时写,错误上报时读;
 	// host 粒度足够熔断统计,并发同 host 偶尔错位可接受)。
 	lastPick sync.Map // host(string) -> proxy URL string
@@ -234,6 +240,16 @@ func Open(dir, addr string) (*Traffic, error) {
 		if pool := t.pool.Load(); pool != nil {
 			if u := pool.Pick(req.Host); u != nil {
 				t.lastPick.Store(hostOnly(req.Host), u.String())
+				return u, nil
+			}
+			if t.strictEgress.Load() && pool.Configured() {
+				if t.directRecordFallback.Load() {
+					// 运维显式选择「直连但仍录制」：牺牲真实 IP 隐藏，换取流量证据不断档。
+					return nil, nil
+				}
+				// 池已配置但全部熔断：指向一个必然失败的本地地址，请求快速失败，
+				// 而不是回退 upstream/直连把真实 IP 暴露给目标。
+				u, _ := url.Parse(strictBlockProxy)
 				return u, nil
 			}
 		}
@@ -333,7 +349,6 @@ func (t *Traffic) ProxyAddr() string {
 func (t *Traffic) ProxyPoolEnabled() bool {
 	return t.pool.Load() != nil
 }
-
 
 // SetUpstreamProxy points every captured request at a global egress proxy
 // (http/https/socks5, optional user:pass in the URL). An empty raw string clears

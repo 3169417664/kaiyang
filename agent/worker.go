@@ -6,19 +6,20 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/3169417664/kaiyang/db"
+	"github.com/3169417664/kaiyang/hosttools"
+	"github.com/3169417664/kaiyang/intercept"
 	"github.com/Autumn-27/norma/agentcore"
 	"github.com/Autumn-27/norma/harness"
 	"github.com/Autumn-27/norma/llm"
 	"github.com/Autumn-27/norma/permission"
 	actool "github.com/Autumn-27/norma/tool"
 	"github.com/Autumn-27/norma/transcript"
-	"github.com/3169417664/kaiyang/db"
-	"github.com/3169417664/kaiyang/hosttools"
-	"github.com/3169417664/kaiyang/intercept"
 )
 
 // Worker is an LLM work agent (docs §4.4): it claims ONE intent, completes it
@@ -245,6 +246,11 @@ func proxyEnv(proxyAddr, caCert string) []string {
 		"http_proxy=" + proxyAddr, "https_proxy=" + proxyAddr,
 		"ALL_PROXY=" + proxyAddr, "all_proxy=" + proxyAddr, // socks5 egress: curl reads only this
 		"NODE_USE_ENV_PROXY=1", // Node 24+: honor HTTP(S)_PROXY in built-in fetch/http
+		// EGRESS_PROXY 给脚本/工具显式传参用（sqlmap --proxy、ffuf -proxy、
+		// nuclei -proxy 等对 env 支持不稳的工具直接从环境变量取）。
+		"EGRESS_PROXY=" + proxyAddr,
+		// 兼容旧 skills/脚本里仍在读 POJUN_PROXY 的写法；新代码统一用 EGRESS_PROXY。
+		"POJUN_PROXY=" + proxyAddr,
 	}
 	if caCert != "" {
 		env = append(env,
@@ -253,9 +259,57 @@ func proxyEnv(proxyAddr, caCert string) []string {
 			"REQUESTS_CA_BUNDLE="+caCert,
 			"GIT_SSL_CAINFO="+caCert,
 			"NODE_EXTRA_CA_CERTS="+caCert,
+			"EGRESS_PROXY_CA="+caCert,
 		)
 	}
 	return env
+}
+
+// proxyEnvKeys 是 proxyEnv 会写出的全部键。mergeProxyEnv 需要先剔除父进程里
+// 同名变量：POSIX 下重复环境变量以第一条为准，直接 append 可能让子进程仍读到
+// 宿主/服务进程的旧代理值。
+var proxyEnvKeys = []string{
+	"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy",
+	"ALL_PROXY", "all_proxy", "NODE_USE_ENV_PROXY",
+	"SSL_CERT_FILE", "CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE",
+	"GIT_SSL_CAINFO", "NODE_EXTRA_CA_CERTS",
+	"EGRESS_PROXY", "EGRESS_PROXY_CA", "POJUN_PROXY",
+}
+
+// mergeProxyEnv 用平台出口代理覆盖 base（通常是 os.Environ()）。proxyAddr 为空
+// 时原样返回 base——保持「未配置代理 = 直连、不动父进程环境」的语义。
+func mergeProxyEnv(base []string, proxyAddr, caCert string) []string {
+	if proxyAddr == "" {
+		return base
+	}
+	drop := make(map[string]bool, len(proxyEnvKeys))
+	for _, k := range proxyEnvKeys {
+		drop[k] = true
+	}
+	out := make([]string, 0, len(base)+len(proxyEnvKeys))
+	for _, kv := range base {
+		if i := strings.IndexByte(kv, '='); i > 0 && drop[kv[:i]] {
+			continue
+		}
+		out = append(out, kv)
+	}
+	extra := proxyEnv(proxyAddr, caCert)
+	if runtime.GOOS == "windows" {
+		// Windows 环境变量名大小写不敏感，exec 会按名去重；同时塞入
+		// HTTP_PROXY 与 http_proxy 时只有最后一个存活。统一保留大写版本。
+		keep := extra[:0]
+		for _, kv := range extra {
+			if i := strings.IndexByte(kv, '='); i > 0 {
+				k := kv[:i]
+				if k != strings.ToUpper(k) {
+					continue
+				}
+			}
+			keep = append(keep, kv)
+		}
+		extra = keep
+	}
+	return append(out, extra...)
 }
 
 // workerDefaultTmpl is the built-in EDITABLE body (段 [A]) of the worker system
@@ -342,6 +396,19 @@ func ensureRunDir(base string, taskID, intentID int64) string {
 // cmdOutDir is the SDK large-tool-output spill dir under an agent's run dir.
 func cmdOutDir(dir string) string { return filepath.Join(dir, "cmd-output") }
 
+// workerEgressBlock 是代码 owned 的出口护栏提示：Bash/原生工具已注入代理环境，
+// 但 sqlmap/ffuf/nuclei 等对 env 支持不稳，必须显式从 EGRESS_PROXY 取地址。
+func workerEgressBlock(proxyAddr string) string {
+	if strings.TrimSpace(proxyAddr) == "" {
+		return ""
+	}
+	return "\n\n**出口代理（必须遵守）**：当前任务流量统一走 " + proxyAddr + "（curl/python/git 等自动继承 HTTP(S)_PROXY；后台 job_start 同样继承）。" +
+		"以下工具对 env 支持不稳，必须显式传代理：sqlmap 用 `--proxy=\"$EGRESS_PROXY\"`，" +
+		"ffuf 用 `-proxy \"$EGRESS_PROXY\"`，nuclei 用 `-proxy \"$EGRESS_PROXY\"`，" +
+		"httpx 用 `-http-proxy \"$EGRESS_PROXY\"`，dalfox 用 `--proxy \"$EGRESS_PROXY\"`。" +
+		"禁止用 `--noproxy '*'`、`trust_env=False`、`proxies={}` 等方式绕过出口（会丢失流量证据并暴露真实 IP）。"
+}
+
 func workerSystem(agentKey, proxyAddr, caCert, dataDir, runDir, taskOverride string) string {
 	if strings.TrimSpace(agentKey) == "" {
 		agentKey = "worker"
@@ -357,7 +424,7 @@ func workerSystem(agentKey, proxyAddr, caCert, dataDir, runDir, taskOverride str
 	// the traffic_* tools are registered — so it gates the traffic-tool note.
 	// Optional finding guidance is added for every role after tool resolution.
 	// 作业硬尾巴（v0.4.63）：扫描器优先 + 技能路由，代码注入不可经 UI 改掉。
-	out := body + workerTrafficBlock(caCert != "") + workerArtifactSpec(runDir) + scannerFirstGuidance + skillRoutingGuidance + execFaceWorkerGuidance +
+	out := body + workerTrafficBlock(caCert != "") + workerEgressBlock(proxyAddr) + workerArtifactSpec(runDir) + scannerFirstGuidance + skillRoutingGuidance + execFaceWorkerGuidance +
 		engagementFraming + impactVerificationGuidance + footholdFactGuidance
 	// 宿主工具清单：真正动手的是 worker，所以清单必须进 worker 的 system prompt。
 	// 之前只有 planner 的唤醒提示里有（用于「派意图选手段」），worker 看不到——
@@ -510,6 +577,7 @@ func firstCancel(cs []func(error)) func(error) {
 
 func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.AssetStore, ts *db.ExplorationStore, intent *db.Node, hooks harness.HookRunner, emit func(db.Activity), enr EnrichTrigger, notifyFinding func(int64, string), requestID, message string, workCancel func(error)) (harness.TerminalReason, WriteCounts, error) {
 	tsx := NewToolSet(ts, name)
+	tsx.SetEgressProxy(w.proxyAddr, w.proxyCACert) // 原生 http_request/session_login 与 Bash 同源出口
 	tsx.SetReviewEnabled(w.reviewEnabledFn)
 	if w.agentKey != "" && w.agentKey != "worker" {
 		tsx.SetExecutorKey(w.agentKey)

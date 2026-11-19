@@ -11,13 +11,13 @@ func TestCmpVersions(t *testing.T) {
 		want int
 	}{
 		{"1.2.3", "1.2.3", 0},
-		{"1.2", "1.2.0", 0},        // missing segments = 0
-		{"1.10", "1.9", 1},         // numeric not lexical
-		{"2.4.49", "2.4.50", -1},   //
-		{"1.0b3", "1.0", -1},       // suffix sorts below bare number
-		{"v2.4.49", "2.4.49", 0},   // leading v tolerated
-		{"3.0", "2.99.9", 1},       //
-		{"1.2.3.4", "1.2.3", 1},    // longer wins when prefix equal
+		{"1.2", "1.2.0", 0},      // missing segments = 0
+		{"1.10", "1.9", 1},       // numeric not lexical
+		{"2.4.49", "2.4.50", -1}, //
+		{"1.0b3", "1.0", -1},     // suffix sorts below bare number
+		{"v2.4.49", "2.4.49", 0}, // leading v tolerated
+		{"3.0", "2.99.9", 1},     //
+		{"1.2.3.4", "1.2.3", 1},  // longer wins when prefix equal
 	}
 	for _, c := range cases {
 		if got := cmpVersions(c.a, c.b); got != c.want {

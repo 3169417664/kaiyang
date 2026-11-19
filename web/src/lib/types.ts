@@ -1804,6 +1804,8 @@ export interface HostenvInstaller {
   upgrade_required?: boolean;
   socket: string;
   proxy: string;
+  sources?: HostInstallSources;
+  sources_supported?: boolean;
 }
 
 export interface HostenvStatus {
@@ -1869,8 +1871,15 @@ export interface ProxyPoolRunning {
 export interface ProxyPoolState {
   entries: ProxyPoolEntry[];
   strategy: string;
+  enabled: boolean;
   running: ProxyPoolRunning[];
+  usable?: number;
+  total?: number;
+  effective_total?: number;
+  socks5_blocked?: number;
+  socks5_allowed?: boolean;
   capturing: boolean;
+  strict?: boolean;
   check_target?: string;
   health_minutes?: number;
   health_cooldown?: number;
@@ -2183,4 +2192,71 @@ export interface IntranetCredential {
   domain: string;
   target: string;
   relation: "discovered" | "verified" | string;
+}
+
+
+export type InstallSourcePreset = "" | "tencent" | "tuna";
+
+export interface HostInstallSources {
+  apt: InstallSourcePreset;
+  pypi: InstallSourcePreset;
+}
+
+export interface ProxyPoolSubscription {
+  format: "uri" | "clash";
+  supported: string[];
+  text: string;
+  unsupported: number;
+  invalid: number;
+  ignored?: number;
+  note?: string;
+  clash_yaml?: string;
+  proxies?: number;
+  direct_nodes?: number;
+  local_ports?: number[];
+  proxy_groups?: number;
+  group_names?: string[];
+  proxy_providers?: number;
+  nodes?: { name: string; type: string }[];
+  groups?: { name: string; type: string; members?: string[] }[];
+}
+
+export interface LocalProxyCandidate {
+  url: string;
+  port: number;
+  ok: boolean;
+  latency_ms: number;
+  exit_ip?: string;
+  error?: string;
+  source: string;
+}
+
+export interface MihomoStatus {
+  running: boolean;
+  installed: boolean;
+  port: number;
+  pid: number;
+  binary: string;
+  config_path: string;
+  log_path: string;
+  started_at?: string;
+  version?: string;
+  last_error?: string;
+  outbound?: string;
+  mode?: string;
+  nodes?: string[];
+  controller_port?: number;
+}
+
+export interface SSHProvider {
+  id: number;
+  name: string;
+  host: string;
+  port: number;
+  user: string;
+  credential_id?: number;
+  created_at?: string;
+  status?: string;
+  socks_addr?: string;
+  started_at?: string;
 }

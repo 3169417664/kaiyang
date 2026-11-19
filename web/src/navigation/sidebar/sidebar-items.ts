@@ -8,6 +8,7 @@ import {
   Bug,
   ClipboardList,
   FileClock,
+  FileArchive,
   FileCode2,
   FileText,
   FolderOpen,
@@ -106,6 +107,7 @@ export const sidebarItems: NavGroup[] = [
       { id: "notify", title: "通知推送", url: "/system/notify", icon: BellRing, perm: "notify:read" },
       { id: "vulnintel", title: "漏洞情报", url: "/system/vulnintel", icon: ShieldCheck, perm: "vulnintel:read" },
       { id: "proxypool", title: "代理池", url: "/system/proxypool", icon: Network, perm: "proxy:read" },
+      { id: "egress", title: "SSH 跳板", url: "/system/egress", icon: Network, perm: "config:read" },
       { id: "hostenv", title: "宿主环境", url: "/system/hostenv", icon: MonitorCog, perm: "hostenv:read" },
       { id: "c2", title: "监听器 / C2", url: "/system/c2", icon: RadioTower, perm: "c2:read" },
       { id: "intercept", title: "拦截规则", url: "/system/intercept", icon: ShieldAlert, perm: "intercept:read" },
@@ -115,6 +117,7 @@ export const sidebarItems: NavGroup[] = [
       { id: "audit", title: "审计日志", url: "/system/audit", icon: FileClock, perm: "log:read" },
       { id: "logs", title: "日志", url: "/system/logs", icon: ScrollText, perm: "log:read" },
       { id: "settings", title: "系统配置", url: "/system/settings", icon: Settings2, perm: "config:read" },
+      { id: "diagnostics", title: "诊断包", url: "/system/diagnostics", icon: FileArchive, perm: "config:read" },
     ],
   },
 ];

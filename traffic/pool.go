@@ -56,7 +56,7 @@ type poolUpstream struct {
 }
 
 const (
-	breakAfterFails = 5              // 连败 N 次 → 熔断
+	breakAfterFails = 5                // 连败 N 次 → 熔断
 	breakCooldown   = 10 * time.Minute // 冷却期
 )
 
@@ -154,18 +154,6 @@ func (s *selector) Pick(host string) *url.URL {
 	}
 }
 
-// findUpstream 从一段候选里按原始 URL 找回条目(钉住关系用 URL 串对账,池重载后仍有效)。
-func findUpstream(list []*poolUpstream, raw string) *poolUpstream {
-	for _, e := range list {
-		if e.raw.String() == raw {
-			return e
-		}
-	}
-	return nil
-}
-
-// ReportFailure 上报某上游代理的一次失败(带目标 host 用于诊断,当前只计数)。
-// 连败达阈值 → 熔断 10 分钟;成功一次即清零。
 func (s *selector) ReportResult(proxyRaw string, ok bool) {
 	if proxyRaw == "" {
 		return
@@ -180,6 +168,7 @@ func (s *selector) ReportResult(proxyRaw string, ok bool) {
 		now := time.Now().Unix()
 		if ok {
 			e.failures.Store(0)
+			e.breakOpen.Store(0) // 一次成功即解除熔断
 			e.lastOK.Store(now)
 			return
 		}
@@ -350,4 +339,185 @@ func (t *Traffic) ProxyPoolReportBad(target string, cooldown time.Duration) stri
 	}
 	u, _ := raw.(string)
 	return pool.MarkBad(u, cooldown)
+}
+
+// Available 返回当前未被熔断的上游数量。
+func (s *selector) Available() int {
+	s.mu.Lock()
+	entries := s.entries
+	s.mu.Unlock()
+	now := time.Now().Unix()
+	n := 0
+	for _, e := range entries {
+		if bo := e.breakOpen.Load(); bo != 0 && now < bo {
+			continue
+		}
+		n++
+	}
+	return n
+}
+
+// SnapshotBreaks 导出「尚未到期」的熔断状态（掩码前的原始 URL → 解禁时间 unix）。
+// 进程重启会重建 selector，若不持久化，所有已判定不通的出口会重新变成「可用」，
+// 任务又要白等一轮超时——现网实测 240 条里 231 条死代理重启后全部复活。
+func (s *selector) SnapshotBreaks() map[string]int64 {
+	s.mu.Lock()
+	entries := s.entries
+	s.mu.Unlock()
+	now := time.Now().Unix()
+	out := map[string]int64{}
+	for _, e := range entries {
+		if bo := e.breakOpen.Load(); bo > now {
+			out[e.raw.String()] = bo
+		}
+	}
+	return out
+}
+
+// RestoreBreaks 应用持久化的熔断状态（只认仍在有效期内的条目）。
+func (s *selector) RestoreBreaks(state map[string]int64) int {
+	if len(state) == 0 {
+		return 0
+	}
+	s.mu.Lock()
+	entries := s.entries
+	s.mu.Unlock()
+	now := time.Now().Unix()
+	n := 0
+	for _, e := range entries {
+		until, ok := state[e.raw.String()]
+		if !ok || until <= now {
+			continue
+		}
+		e.breakOpen.Store(until)
+		if e.lastFail.Load() == 0 {
+			e.lastFail.Store(now)
+		}
+		n++
+	}
+	return n
+}
+
+// findUpstream 从一段候选里按原始 URL 找回条目(钉住关系用 URL 串对账,池重载后仍有效)。
+func findUpstream(list []*poolUpstream, raw string) *poolUpstream {
+	for _, e := range list {
+		if e.raw.String() == raw {
+			return e
+		}
+	}
+	return nil
+}
+
+// ReportFailure 上报某上游代理的一次失败(带目标 host 用于诊断,当前只计数)。
+// 连败达阈值 → 熔断 10 分钟;成功一次即清零。
+
+// ClearBreak 清除某上游的熔断/连败状态（导入验活或手动验活通过后调用）。
+// 不复位会导致「验活显示通了，页面仍显示 0 可用」——旧熔断状态在池重推时被继承。
+func (s *selector) ClearBreak(proxyRaw string) bool {
+	if proxyRaw == "" {
+		return false
+	}
+	s.mu.Lock()
+	entries := s.entries
+	s.mu.Unlock()
+	for _, e := range entries {
+		if e.raw.String() != proxyRaw {
+			continue
+		}
+		e.failures.Store(0)
+		e.breakOpen.Store(0)
+		return true
+	}
+	return false
+}
+
+// MarkBad 把某个上游立即熔断 cooldown(主动健康检查 / Agent 上报用)。// 被动熔断要等连败 5 次,而「已知不通」的代理再试 5 次只是白白拖慢请求——
+// 主动判定成立就立刻冷却。返回被熔断上游的掩码 URL,空串表示没找到。
+
+// ProxyPoolClearBreak 清除某上游的熔断状态（导入验活/手动验活成功后调用）。
+// 返回是否找到该条目；池为空时返回 false。
+func (t *Traffic) ProxyPoolClearBreak(proxyRaw string) bool {
+	pool := t.pool.Load()
+	if pool == nil {
+		return false
+	}
+	return pool.ClearBreak(proxyRaw)
+}
+
+// ProxyPoolMarkBad 把某个上游立即熔断 cooldown(主动健康检查 / 手动验证失败时用)。
+// 返回被熔断的掩码 URL,空串表示不在池里。
+
+// host 为空时按策略视作同一个「虚拟目标」;sticky_host_random 会因此把整台机器
+// 钉在同一个出口上,符合「一个任务一个出口」的直觉。
+func (t *Traffic) ProxyPoolPick(host string) string {
+	pool := t.pool.Load()
+	if pool == nil {
+		return ""
+	}
+	if u := pool.Pick(host); u != nil {
+		return u.String()
+	}
+	return ""
+}
+
+// ProxyPoolAvailable 返回当前未被熔断的上游数量(UI 用于提示「可用 N/M」)。
+func (t *Traffic) ProxyPoolAvailable() int {
+	pool := t.pool.Load()
+	if pool == nil {
+		return 0
+	}
+	return pool.Available()
+}
+
+// SnapshotProxyBreaks 导出未到期的熔断状态（供 server 持久化，跨重启保留）。
+func (t *Traffic) SnapshotProxyBreaks() map[string]int64 {
+	pool := t.pool.Load()
+	if pool == nil {
+		return nil
+	}
+	return pool.SnapshotBreaks()
+}
+
+// RestoreProxyBreaks 应用持久化的熔断状态，返回恢复的条目数。
+func (t *Traffic) RestoreProxyBreaks(state map[string]int64) int {
+	pool := t.pool.Load()
+	if pool == nil {
+		return 0
+	}
+	return pool.RestoreBreaks(state)
+}
+
+// strictBlockProxy 是「严格出口」模式下池全部熔断时返回的哨兵地址：
+// 127.0.0.1:1 必然连接失败，请求快速报错而不是直连泄露真实 IP。
+const strictBlockProxy = "http://127.0.0.1:1"
+
+// SetStrictEgress 开关严格出口：池已配置但无可用上游时，MITM 与 Agent 均失败，
+// 不回退直连。由 server 按设置项 egress_strict_proxy 注入。
+func (t *Traffic) SetStrictEgress(on bool) { t.strictEgress.Store(on) }
+
+// SetDirectRecordFallback enables "direct dial but still record" when strict
+// egress is on and every pool upstream is broken. Operators opt in explicitly;
+// it trades real-IP exposure for continuous traffic evidence.
+func (t *Traffic) SetDirectRecordFallback(on bool) { t.directRecordFallback.Store(on) }
+
+// DirectRecordFallback reports the current fallback switch.
+func (t *Traffic) DirectRecordFallback() bool { return t.directRecordFallback.Load() }
+
+// StrictEgress 返回当前严格出口开关状态。
+func (t *Traffic) StrictEgress() bool { return t.strictEgress.Load() }
+
+// ProxyPoolConfigured 报告池里是否有启用的条目（全部熔断也算已配置）。
+func (t *Traffic) ProxyPoolConfigured() bool {
+	pool := t.pool.Load()
+	if pool == nil {
+		return false
+	}
+	return pool.Configured()
+}
+
+// Configured 报告选择器是否装载了至少一个启用条目。
+func (s *selector) Configured() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.entries) > 0
 }

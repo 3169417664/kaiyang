@@ -4,6 +4,19 @@
 
 ## [Unreleased]
 
+### 新功能（同步上游 Pojun v0.4.83–v0.4.89）
+
+- **代理全链路**：mihomo/Clash 内核安装与启停、订阅拉取（Clash YAML / URI / base64）、
+  代理池总开关/导入验活/熔断持久化、严格出口与「直连但仍录制」兜底、本机 Clash 端口接管。
+- **SSH 跳板**：凭据经 XChaCha20-Poly1305 保险库加密，本地 SOCKS5 出口可一键入池。
+- **诊断包**：`/system/diagnostics` 导出 zip（配置、运行指标、任务/意图/轨迹/日志聚合、
+  流量/代理/LLM 统计、完整性自检），代理 URL 中的账号密码掩码。
+- **宿主安装源**：APT/PyPI 腾讯云 / 清华 TUNA 镜像预设，hostd 只接受预设 ID。
+- **会话吊销**：`/api/auth/revoke-all|revoke-current` + 侧边栏确认弹窗，复用服务端会话表。
+- **出口变量**：统一注入 `EGRESS_PROXY` / `EGRESS_PROXY_CA`，Bash、`job_start`、
+  `http_request`、`session_login`、`scan_with_nuclei`、自定义 http 工具与任务登录自检同源。
+- **审查脚本正文**：`ReviewInput v5` 附带命令引用的本地脚本快照（#21.2）。
+
 ### 安全修复（移植上游 Pojun v0.4.87–v0.4.89 审计项）
 
 - **B2 初始化抢占**：未初始化实例生成 `data/setup-token`（0600），`/api/auth/init`

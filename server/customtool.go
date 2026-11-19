@@ -464,15 +464,18 @@ func (s *Server) httpProxyTransport(spec httpExec) *http.Transport {
 	var caFile string
 	if spec.UseRecordingProxy {
 		if addr := s.m.ProxyAddr(); addr != "" {
-			proxyStr = "http://" + addr
+			proxyStr = addr
 			caFile = s.m.ProxyCACert()
 		}
 	}
 	if proxyStr == "" {
 		return nil
 	}
+	if !strings.Contains(proxyStr, "://") {
+		proxyStr = "http://" + proxyStr
+	}
 	pu, err := url.Parse(proxyStr)
-	if err != nil {
+	if err != nil || pu.Host == "" {
 		return nil
 	}
 	tr := &http.Transport{Proxy: http.ProxyURL(pu)}

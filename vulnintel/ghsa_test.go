@@ -15,6 +15,7 @@ import (
 // 保留原样而不是构造一个"好看的"样本：真实数据里有两个坑——
 //  1. first_patched_version 是**字符串** "3.10.0"，不是 {"identifier": ...}；
 //  2. references 是**字符串数组**，不是对象数组。
+//
 // 照着"想象中"的格式写测试，这两处就都测不出来。
 const ghsaRealAdvisory = `[
   {

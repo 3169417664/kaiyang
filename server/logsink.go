@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/3169417664/kaiyang/db"
@@ -41,6 +42,8 @@ type logSinkT struct {
 
 	dbOnce sync.Once
 	dbCh   chan dbWriteReq // buffered async channel; nil until SetDB is called
+	// dbDropped counts async DB writes dropped under extreme load (diagnostics).
+	dbDropped atomic.Int64
 }
 
 var logSink = &logSinkT{cap: 3000, subs: map[chan LogLine]struct{}{}, out: os.Stderr}
@@ -127,6 +130,14 @@ func (s *logSinkT) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+// DroppedLogs 返回因内部折叠/丢弃而未入库的行数（诊断包可见）。
+func (s *logSinkT) DroppedLogs() int64 {
+	if s == nil {
+		return 0
+	}
+	return s.dbDropped.Load()
+}
+
 func (s *logSinkT) add(l LogLine) {
 	s.mu.Lock()
 	s.seq++
@@ -147,6 +158,7 @@ func (s *logSinkT) add(l LogLine) {
 		select {
 		case ch <- dbWriteReq{seq: l.Seq, ll: l}:
 		default:
+			s.dbDropped.Add(1)
 		}
 	}
 
