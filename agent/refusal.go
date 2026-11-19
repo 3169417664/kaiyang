@@ -26,8 +26,8 @@ import (
 	"sync/atomic"
 	"unicode/utf8"
 
-	"github.com/Autumn-27/norma/llm"
 	"github.com/3169417664/kaiyang/llmguard"
+	"github.com/Autumn-27/norma/llm"
 )
 
 // LooksLikeRefusal 保留旧导出名，实现委托给 llmguard（供测试/外部调用）。

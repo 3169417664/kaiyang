@@ -213,7 +213,8 @@ func (t *ToolSet) jobStart() actool.CoreTool {
 			// 独立进程组：job_stop 杀整组，内层脚本/子进程一起结束（不再只杀外层包装 shell）。
 			cmd.SysProcAttr = jobSysProcAttr()
 			// 子进程只继承清洗后的环境：DSN/API Key/云令牌不应进入 Agent 作业。
-			env := FilterSensitiveEnv(os.Environ())
+			// 再用平台出口代理覆盖父进程残留的 HTTP(S)_PROXY，避免 job_start 直连目标。
+			env := mergeProxyEnv(FilterSensitiveEnv(os.Environ()), t.egressProxy, t.egressCA)
 			for _, kv := range strings.Split(a.Env, "&") {
 				k, v, ok := strings.Cut(kv, "=")
 				if ok && strings.TrimSpace(k) != "" {

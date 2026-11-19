@@ -165,6 +165,10 @@ func permissionForRequest(method, fullPath string) (string, bool) {
 		return crudPerm(method, "knowledge"), true
 	case strings.HasPrefix(p, "/notify"):
 		return crudPerm(method, "notify"), true
+	case strings.HasPrefix(p, "/diagnostics"), strings.HasPrefix(p, "/egress"),
+		strings.HasPrefix(p, "/proxypool/mihomo"):
+		// 内核安装、SSH 跳板凭据、诊断包都属于管理面，不随 proxy:write 下放。
+		return crudPerm(method, "config"), true
 	case strings.HasPrefix(p, "/proxypool"):
 		return crudPerm(method, "proxy"), true
 	case strings.HasPrefix(p, "/vulnintel"):

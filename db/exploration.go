@@ -78,11 +78,11 @@ type Node struct {
 	BlockedReason string          `json:"blocked_reason,omitempty"`
 	DeleteReason  string          `json:"delete_reason,omitempty"` // 仅意图假删除(state='deleted')时非空
 	// ContentVersion 用于审核的乐观锁；cold-digest 也会推进它。
-	ContentVersion int `json:"content_version,omitempty"`
-	Anchors       []int64         `json:"anchors,omitempty"`
-	CreatedAt     time.Time       `json:"created_at"`
-	SourceTaskID  int64           `json:"source_task_id,omitempty"`
-	Inherited     bool            `json:"inherited,omitempty"`
+	ContentVersion int       `json:"content_version,omitempty"`
+	Anchors        []int64   `json:"anchors,omitempty"`
+	CreatedAt      time.Time `json:"created_at"`
+	SourceTaskID   int64     `json:"source_task_id,omitempty"`
+	Inherited      bool      `json:"inherited,omitempty"`
 }
 
 // Activity is one worker execution step (= old task_activity).

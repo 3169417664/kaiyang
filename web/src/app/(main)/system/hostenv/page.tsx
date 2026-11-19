@@ -24,6 +24,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { api } from "@/lib/api";
 import type { HostenvStatus, HostTool, InstallJob, ProxyCheckResult } from "@/lib/types";
 
+import { InstallSources } from "./install-sources";
+
 const TERMINAL_STATES = new Set(["done", "failed", "cancelled"]);
 
 const KIND_LABEL: Record<HostTool["kind"], string> = {
@@ -313,7 +315,7 @@ export default function HostEnvPage() {
             </Button>
           </div>
         </CardHeader>
-        <CardContent className="flex flex-col gap-4">
+        <CardContent id="install-proxy-settings" className="flex flex-col gap-4">
           {!loaded ? (
             <div className="space-y-2">
               {Array.from({ length: 6 }).map((_, i) => (
@@ -322,7 +324,6 @@ export default function HostEnvPage() {
             </div>
           ) : (
             <>
-              {/* 装机代理：只作用于安装动作,与目标流量/搜索/LLM 代理无关 */}
               <div className="flex flex-col gap-2 rounded-lg border bg-muted/30 p-3">
                 <div className="flex items-center justify-between gap-2">
                   <Label htmlFor="install-proxy" className="text-sm">
@@ -340,7 +341,7 @@ export default function HostEnvPage() {
                       </Badge>
                     )}
                     <span className="text-muted-foreground text-xs">
-                      {installerReady ? "装东西时走它（apt / GitHub 下载）" : "宿主助手未运行，暂不可用"}
+                      {installerReady ? "用于工具安装和程序更新" : "工具安装需宿主助手，程序更新仍可使用此代理"}
                     </span>
                   </div>
                 </div>
@@ -349,7 +350,7 @@ export default function HostEnvPage() {
                     id="install-proxy"
                     autoComplete="off"
                     className="font-mono text-xs"
-                    placeholder="http://10.0.0.14:7897 或 socks5://host:1080（留空=直连）"
+                    placeholder="http://10.0.0.14:7897 或 socks5://host:1080"
                     value={proxyInput}
                     disabled={!loaded || savingProxy}
                     onChange={(e) => {
@@ -389,10 +390,18 @@ export default function HostEnvPage() {
                   </p>
                 )}
                 <p className="text-muted-foreground text-xs">
-                  国内环境装 nuclei 这类走 GitHub Release 的工具通常需要它；与「全局代理」（Agent
-                  目标流量）互不影响。代理随时可改，改完点「测试」确认通路——代理会失效， 装工具失败时先来这里看。
+                  留空时使用部署环境中的 <code>POJUN_INSTALL_PROXY</code>（如有设置）。修改后可先点「测试」检查代理通路，
+                  保存后回到「版本与更新」重试 GitHub 连接。
                 </p>
               </div>
+
+              {inv && (
+                <InstallSources
+                  sources={inv.installer.sources ?? { apt: "", pypi: "" }}
+                  supported={!!inv.installer.sources_supported}
+                  onSaved={(sources) => setInv((prev) => prev && { ...prev, installer: { ...prev.installer, sources } })}
+                />
+              )}
 
               {!installerReady && inv?.installer.reason && (
                 <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm">

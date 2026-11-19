@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -26,9 +27,16 @@ import (
 const (
 	settingProxyPoolEntries    = "proxy_pool_entries"
 	settingProxyPoolStrategy   = "proxy_pool_strategy"
+	settingProxyPoolEnabled    = "proxy_pool_enabled"
+	settingProxyBreaks         = "proxy_pool_break_state" // 跨重启保留的熔断状态(URL→解禁 unix)
 	settingProxyCheckTarget    = "proxypool_check_target"
 	settingProxyHealthMinutes  = "proxypool_health_minutes"
 	settingProxyHealthCooldown = "proxypool_health_cooldown_minutes"
+	// settingProxyAllowSocks5：是否允许 socks5 上游入池。历史上 go-mitmproxy 在
+	// socks5 拨号失败时会对 nil conn 调 Close() 触发 panic（v1.9.4 已修）。v0.8.0
+	// 起默认允许——SOCKS5 是 Clash/mihomo 混合端的常见出口，默认拒绝会让「导入
+	// Clash 节点」看起来完全不可用。显式设置为 false/0 时才关闭。
+	settingProxyAllowSocks5 = "proxypool_allow_socks5"
 )
 
 const (
@@ -37,6 +45,9 @@ const (
 	defaultProxyHealthCooldown = 30 // 主动熔断的冷却时长(分钟)
 	defaultProxyCheckTimeout   = 8 * time.Second
 	proxyCheckConcurrency      = 8
+	// 导入验活：并发更高、单条超时更短——导入是同步请求，240 条也要在 ~1 分钟内出结果。
+	importVerifyConcurrency = 32
+	importVerifyTimeout     = 6 * time.Second
 )
 
 // proxyPoolState 是持久化的池配置。URL 明文入库(与 LLM 配置密码同级别,
@@ -44,18 +55,23 @@ const (
 type proxyPoolState struct {
 	Entries  []traffic.PoolEntry `json:"entries"`
 	Strategy string              `json:"strategy"`
+	Enabled  bool                `json:"enabled"` // 总开关：false 时池不参与出口选择
 }
 
 func (s *Server) loadProxyPool() *proxyPoolState {
 	return loadProxyPoolState(s.m.pg)
 }
 func loadProxyPoolState(pg *pgdb.DB) *proxyPoolState {
-	st := proxyPoolState{Strategy: "round_robin"}
+	st := proxyPoolState{Strategy: "round_robin", Enabled: true}
 	if raw, ok, _ := pg.GetSetting(settingProxyPoolEntries); ok && raw != "" {
 		_ = json.Unmarshal([]byte(raw), &st)
 	}
 	if v, ok, _ := pg.GetSetting(settingProxyPoolStrategy); ok && v != "" {
 		st.Strategy = v
+	}
+	// 总开关独立成键：老数据没有它时默认开启（升级前池是「有条目即生效」的语义）。
+	if v, ok, err := pg.GetSetting(settingProxyPoolEnabled); err == nil && ok {
+		st.Enabled = !(v == "false" || v == "0")
 	}
 	if st.Entries == nil {
 		st.Entries = []traffic.PoolEntry{}
@@ -63,15 +79,114 @@ func loadProxyPoolState(pg *pgdb.DB) *proxyPoolState {
 	return &st
 }
 
+// socks5Allowed 读取「允许 socks5 上游」开关（v0.8.0 起默认 true；
+// 只有显式写入 false/0 才关闭）。socks5 拨号 panic 在 v1.9.4 已修复。
+func (s *Server) socks5Allowed() bool {
+	if s == nil || s.m == nil || s.m.pg == nil {
+		return true
+	}
+	v, ok, err := s.m.pg.GetSetting(settingProxyAllowSocks5)
+	if err != nil || !ok {
+		return true
+	}
+	v = strings.TrimSpace(strings.ToLower(v))
+	return !(v == "0" || v == "false" || v == "off" || v == "no")
+}
+
+// validateProxyScheme 在 URL 校验之后再做 scheme 策略校验。
+func (s *Server) validateProxyScheme(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return err
+	}
+	if (strings.EqualFold(u.Scheme, "socks5") || strings.EqualFold(u.Scheme, "socks5h")) && !s.socks5Allowed() {
+		return fmt.Errorf("当前版本默认不启用 socks5 上游（历史版本在 socks5 拨号失败时会 panic，且握手无超时）。请改用 http(s):// 代理；确需 socks5 请在系统设置开启 proxypool_allow_socks5")
+	}
+	return nil
+}
+
+// effectivePoolEntries 返回真正推给 MITM 的条目，并统计被 scheme 策略挡下的条数。
+func (s *Server) effectivePoolEntries(st *proxyPoolState) ([]traffic.PoolEntry, int) {
+	if st == nil {
+		return nil, 0
+	}
+	if s.socks5Allowed() {
+		return st.Entries, 0
+	}
+	kept := make([]traffic.PoolEntry, 0, len(st.Entries))
+	blocked := 0
+	for _, e := range st.Entries {
+		if u, err := url.Parse(e.URL); err == nil && (strings.EqualFold(u.Scheme, "socks5") || strings.EqualFold(u.Scheme, "socks5h")) {
+			blocked++
+			continue
+		}
+		kept = append(kept, e)
+	}
+	return kept, blocked
+}
+
 func (s *Server) saveProxyPool(st proxyPoolState) error {
+	return saveProxyPoolState(s.m.pg, st)
+}
+
+// saveProxyPoolState 是 saveProxyPool 的包级版本，供 Manager 启动期自动探测使用。
+func saveProxyPoolState(pg *pgdb.DB, st proxyPoolState) error {
 	raw, err := json.Marshal(st)
 	if err != nil {
 		return err
 	}
-	if err := s.m.pg.SetSetting(settingProxyPoolEntries, string(raw)); err != nil {
+	if err := pg.SetSetting(settingProxyPoolEntries, string(raw)); err != nil {
 		return err
 	}
-	return s.m.pg.SetSetting(settingProxyPoolStrategy, st.Strategy)
+	if err := pg.SetSetting(settingProxyPoolStrategy, st.Strategy); err != nil {
+		return err
+	}
+	enabled := "true"
+	if !st.Enabled {
+		enabled = "false"
+	}
+	return pg.SetSetting(settingProxyPoolEnabled, enabled)
+}
+
+// applyProxyPool 把配置推到运行态：总开关关闭时与「池为空」同义（回退全局代理/直连）。
+func (s *Server) applyProxyPool(st proxyPoolState) error {
+	t := s.m.traffic
+	if t == nil {
+		return nil
+	}
+	entries, blocked := s.effectivePoolEntries(&st)
+	if blocked > 0 {
+		log.Printf("[proxypool] 已跳过 %d 条 socks5 上游（默认禁用；如需启用请开启 proxypool_allow_socks5）", blocked)
+	}
+	var err error
+	if !st.Enabled {
+		err = t.SetProxyPool(nil, st.Strategy)
+	} else {
+		err = t.SetProxyPool(entries, st.Strategy)
+	}
+	if err != nil {
+		return err
+	}
+	s.refreshAgentsForEgressChange()
+	return nil
+}
+
+// refreshAgentsForEgressChange 在「流量捕获关闭」时重建 Agent：出口地址是在建
+// Agent 时烤进 worker 的 HTTP_PROXY 的，池一改就得重新装配才能生效。
+// 捕获开启时代理地址是常量（MITM 本地端口），池在 MITM 钩子里按请求选，无需重建。
+func (s *Server) refreshAgentsForEgressChange() {
+	if s.m == nil || s.m.TrafficEnabled() {
+		return
+	}
+	s.cfgMu.Lock()
+	cfg, on := s.llmCfg, s.llmOn
+	s.cfgMu.Unlock()
+	if !on {
+		return
+	}
+	if err := s.applyLLM(cfg); err != nil {
+		log.Printf("[proxypool] 出口变更后重建 Agent 失败: %v", err)
+	}
 }
 
 // proxyPoolGet 返回当前配置(含运行状态:熔断计数/掩码/最近一次验证)。
@@ -84,16 +199,52 @@ func (s *Server) proxyPoolGet(w http.ResponseWriter, r *http.Request) {
 	s.m.proxyCheckMu.Lock()
 	last := s.m.proxyCheckLast
 	s.m.proxyCheckMu.Unlock()
+	eff, socks5Blocked := s.effectivePoolEntries(st)
 	writeJSON(w, 200, map[string]any{
-		"entries":         st.Entries,
-		"strategy":        st.Strategy,
-		"running":         running,
-		"capturing":       s.m.TrafficEnabled(),
-		"check_target":    settingOr(s.m.pg, settingProxyCheckTarget, defaultProxyCheckTarget),
-		"health_minutes":  intSetting(s.m.pg, settingProxyHealthMinutes, defaultProxyHealthMinutes),
-		"health_cooldown": intSetting(s.m.pg, settingProxyHealthCooldown, defaultProxyHealthCooldown),
-		"last_check":      last,
+		"entries":                st.Entries,
+		"strategy":               st.Strategy,
+		"enabled":                st.Enabled,
+		"total":                  len(st.Entries),
+		"effective_total":        len(eff),
+		"socks5_blocked":         socks5Blocked,
+		"socks5_allowed":         s.socks5Allowed(),
+		"running":                running,
+		"usable":                 s.usableProxyCount(running),
+		"capturing":              s.m.TrafficEnabled(),
+		"check_target":           settingOr(s.m.pg, settingProxyCheckTarget, defaultProxyCheckTarget),
+		"health_minutes":         intSetting(s.m.pg, settingProxyHealthMinutes, defaultProxyHealthMinutes),
+		"health_cooldown":        intSetting(s.m.pg, settingProxyHealthCooldown, defaultProxyHealthCooldown),
+		"last_check":             last,
+		"strict":                 s.m.traffic != nil && s.m.traffic.StrictEgress(),
+		"direct_record_fallback": s.m.traffic != nil && s.m.traffic.DirectRecordFallback(),
+		// effective_proxy 是 Agent/Bash/WebFetch 当前真正拿到的出口（掩码凭据），
+		// 便于确认「配置了代理后没有回退直连」；空串 = 直连。
+		"effective_proxy": maskProxyURL(s.m.ProxyAddr()),
 	})
+}
+
+// maskProxyURL 掩码代理地址里的账号密码，供状态接口回显。
+func maskProxyURL(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.User == nil {
+		return raw
+	}
+	u.User = url.User("***")
+	return u.String()
+}
+
+// usableProxyCount 数「未被熔断」的条目（running 里的 break_remaining==0）。
+func (s *Server) usableProxyCount(running []traffic.PoolEntry) int {
+	n := 0
+	for _, e := range running {
+		if e.BreakRemaining == 0 {
+			n++
+		}
+	}
+	return n
 }
 
 // settingOr 读字符串设置,缺失/空时用默认值。
@@ -107,7 +258,16 @@ func settingOr(pg *pgdb.DB, key, def string) string {
 
 // proxyPoolPut 全量替换配置并热应用。
 func (s *Server) proxyPoolPut(w http.ResponseWriter, r *http.Request) {
-	var in proxyPoolState
+	// Enabled 用指针区分「没传」和「显式 false」：老客户端不传时保持原值。
+	var in struct {
+		Entries  []traffic.PoolEntry `json:"entries"`
+		Strategy string              `json:"strategy"`
+		Enabled  *bool               `json:"enabled"`
+		Strict   *bool               `json:"strict"`
+		// ConfirmClear 显式确认「把非空池清空」。页面状态过期（GET 失败 / 旧标签页）
+		// 时 entries=[] 的误保存会静默清掉整池，必须由调用方明确确认。
+		ConfirmClear bool `json:"confirm_clear"`
+	}
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		writeErr(w, 400, err.Error())
 		return
@@ -115,11 +275,29 @@ func (s *Server) proxyPoolPut(w http.ResponseWriter, r *http.Request) {
 	if in.Entries == nil {
 		in.Entries = []traffic.PoolEntry{}
 	}
+	st := proxyPoolState{Entries: in.Entries, Strategy: in.Strategy, Enabled: true}
+	prev := s.loadProxyPool()
+	if len(st.Entries) == 0 && len(prev.Entries) > 0 && !in.ConfirmClear {
+		writeErr(w, 400, "清空代理池需要 confirm_clear=true（防止页面状态过期误清空）；只想停用请传 enabled=false")
+		return
+	}
+	if st.Strategy == "" {
+		st.Strategy = prev.Strategy
+	}
+	if in.Enabled != nil {
+		st.Enabled = *in.Enabled
+	} else {
+		st.Enabled = prev.Enabled
+	}
 	// 校验:URL 可解析、权重下限、名称去重留白
 	seen := map[string]bool{}
-	for i := range in.Entries {
-		e := &in.Entries[i]
+	for i := range st.Entries {
+		e := &st.Entries[i]
 		if _, err := traffic.ValidateProxyURL(e.URL); err != nil {
+			writeErr(w, 400, err.Error())
+			return
+		}
+		if err := s.validateProxyScheme(e.URL); err != nil {
 			writeErr(w, 400, err.Error())
 			return
 		}
@@ -132,15 +310,28 @@ func (s *Server) proxyPoolPut(w http.ResponseWriter, r *http.Request) {
 		}
 		seen[e.URL] = true
 	}
-	if t := s.m.traffic; t != nil {
-		if err := t.SetProxyPool(in.Entries, in.Strategy); err != nil {
-			writeErr(w, 400, err.Error())
-			return
-		}
+	if err := s.applyProxyPool(st); err != nil {
+		writeErr(w, 400, err.Error())
+		return
 	}
-	if err := s.saveProxyPool(in); err != nil {
+	if err := s.saveProxyPool(st); err != nil {
 		writeErr(w, 500, err.Error())
 		return
+	}
+	// 严格出口开关独立于池条目：显式传了就持久化并立即生效（页面「保存并热应用」）。
+	if in.Strict != nil && s.m.traffic != nil {
+		val := "true"
+		if !*in.Strict {
+			val = "false"
+		}
+		if err := s.m.pg.SetSetting(settingEgressStrict, val); err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+		s.m.traffic.SetStrictEgress(*in.Strict)
+		// 严格开关会改变 ProxyAddr（可能变成哨兵地址），Agent 的 HTTP_PROXY 是
+		// 建 Agent 时固定的，必须重建才能立刻生效。
+		s.refreshAgentsForEgressChange()
 	}
 	s.proxyPoolGet(w, r)
 }
@@ -182,6 +373,9 @@ func parseProxyLine(raw string) (name, u string, comment bool, err error) {
 			return name, u, false, nil
 		}
 	}
+	if strings.HasPrefix(strings.ToLower(line), "socks://") {
+		line = "socks5://" + line[len("socks://"):]
+	}
 	if !strings.Contains(line, "://") {
 		line = "http://" + line
 	}
@@ -192,13 +386,19 @@ func parseProxyLine(raw string) (name, u string, comment bool, err error) {
 }
 
 // proxyPoolBulk 批量导入。mode=append 追加(默认),replace 整体替换。
+// verify 默认开启：逐条经该代理请求 check_target，连不通的行**不导入**并逐行说明原因
+// （用户诉求：「导入的时候不通的这一部分就不会被导入进去了」）。若 check_target 本身
+// 直连不可达（内网/被墙），自动跳过验证并在响应里警告，绝不因为验活环境坏了把整包丢弃。
 // 返回逐行结果,让前端能明确指出哪一行错在哪。
 func (s *Server) proxyPoolBulk(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Text     string `json:"text"`
-		Mode     string `json:"mode"`
-		Strategy string `json:"strategy"`
-		Weight   int    `json:"weight"`
+		Text             string `json:"text"`
+		Mode             string `json:"mode"`
+		Strategy         string `json:"strategy"`
+		Weight           int    `json:"weight"`
+		Verify           *bool  `json:"verify"`
+		VerifyTimeoutSec int    `json:"verify_timeout_seconds"`
+		Enabled          *bool  `json:"enabled"`
 	}
 	if err := decode(r, &req); err != nil {
 		writeErr(w, 400, err.Error())
@@ -221,6 +421,9 @@ func (s *Server) proxyPoolBulk(w http.ResponseWriter, r *http.Request) {
 	if req.Mode == "replace" {
 		st.Entries = []traffic.PoolEntry{}
 	}
+	if req.Enabled != nil {
+		st.Enabled = *req.Enabled
+	}
 	byURL := map[string]int{}
 	for i, e := range st.Entries {
 		byURL[e.URL] = i
@@ -228,6 +431,14 @@ func (s *Server) proxyPoolBulk(w http.ResponseWriter, r *http.Request) {
 
 	var invalid []proxyBulkInvalid
 	added, updated := 0, 0
+	// incoming 记录本次文本里解析出的全部条目（新增 + 已存在）。两条路径都验活：
+	// 新增的连不通就丢弃；已存在的连不通就停用（不删用户数据，但也不再参与出口选择）。
+	type incomingEntry struct {
+		line  int
+		entry traffic.PoolEntry
+		isNew bool
+	}
+	var incoming []incomingEntry
 	lines := strings.Split(req.Text, "\n")
 	for i, ln := range lines {
 		if strings.TrimSpace(ln) == "" {
@@ -242,6 +453,10 @@ func (s *Server) proxyPoolBulk(w http.ResponseWriter, r *http.Request) {
 			invalid = append(invalid, proxyBulkInvalid{Line: i + 1, Raw: strings.TrimSpace(ln), Reason: verr.Error()})
 			continue
 		}
+		if serr := s.validateProxyScheme(norm.String()); serr != nil {
+			invalid = append(invalid, proxyBulkInvalid{Line: i + 1, Raw: strings.TrimSpace(ln), Reason: serr.Error()})
+			continue
+		}
 		if name == "" {
 			name = norm.Host
 		}
@@ -253,31 +468,156 @@ func (s *Server) proxyPoolBulk(w http.ResponseWriter, r *http.Request) {
 				st.Entries[idx].Weight = weight
 			}
 			updated++
+			incoming = append(incoming, incomingEntry{line: i + 1, entry: st.Entries[idx], isNew: false})
 			continue
 		}
-		st.Entries = append(st.Entries, traffic.PoolEntry{
-			URL: key, Name: name, Enabled: true, Weight: weight,
-		})
+		e := traffic.PoolEntry{URL: key, Name: name, Enabled: true, Weight: weight}
+		st.Entries = append(st.Entries, e)
 		byURL[key] = len(st.Entries) - 1
 		added++
+		incoming = append(incoming, incomingEntry{line: i + 1, entry: e, isNew: true})
 	}
+
+	if req.Mode == "replace" && strings.TrimSpace(req.Text) == "" {
+		// 替换模式 + 空文本：绝不能把现有池清空。全是无效行时仍走正常流程返回
+		// 逐行原因（此时也没新增条目，不会误清空）。
+		writeErr(w, 400, "替换导入的文本为空，已拒绝（不会清空现有池）")
+		return
+	}
+
+	// --- 导入验活 ---
+	verify := true
+	if req.Verify != nil {
+		verify = *req.Verify
+	}
+	var rejected []proxyBulkInvalid
+	var verifiedOK []string
+	verifySkipped, verifyNote := false, ""
+	disabled := 0
+	if verify && len(incoming) > 0 {
+		target := settingOr(s.m.pg, settingProxyCheckTarget, defaultProxyCheckTarget)
+		timeout := time.Duration(req.VerifyTimeoutSec) * time.Second
+		if timeout <= 0 || timeout > 30*time.Second {
+			timeout = importVerifyTimeout
+		}
+		if !targetReachableDirect(target, 4*time.Second) {
+			// 验活环境本身不可用：宁可全导入也不能把整包误杀。
+			verifySkipped = true
+			verifyNote = "验证目标 " + target + " 直连不可达，本次跳过连通性验证（可在设置页改 proxypool_check_target）"
+		} else {
+			entries := make([]traffic.PoolEntry, len(incoming))
+			for i, f := range incoming {
+				entries[i] = f.entry
+			}
+			results := probeProxies(context.Background(), entries, target, timeout, importVerifyConcurrency)
+			dropNew := map[string]bool{}
+			disableExisting := map[string]bool{}
+			for i, res := range results {
+				if res.OK {
+					verifiedOK = append(verifiedOK, incoming[i].entry.URL)
+					continue
+				}
+				if incoming[i].isNew {
+					dropNew[incoming[i].entry.URL] = true
+				} else {
+					disableExisting[incoming[i].entry.URL] = true
+				}
+				reason := res.Error
+				if !incoming[i].isNew {
+					reason = "已停用（连不通）: " + reason
+					disabled++
+				}
+				rejected = append(rejected, proxyBulkInvalid{
+					Line:   incoming[i].line,
+					Raw:    maskProxy(incoming[i].entry.URL),
+					Reason: reason,
+				})
+			}
+			if len(dropNew) > 0 || len(disableExisting) > 0 {
+				kept := st.Entries[:0]
+				for _, e := range st.Entries {
+					if dropNew[e.URL] {
+						continue
+					}
+					if disableExisting[e.URL] {
+						e.Enabled = false
+					}
+					kept = append(kept, e)
+				}
+				st.Entries = kept
+				added -= len(dropNew)
+				if added < 0 {
+					added = 0
+				}
+			}
+		}
+	}
+
 	if req.Strategy != "" {
 		st.Strategy = req.Strategy
 	}
-	if t := s.m.traffic; t != nil {
-		if err := t.SetProxyPool(st.Entries, st.Strategy); err != nil {
-			writeErr(w, 400, err.Error())
-			return
+	if err := s.applyProxyPool(*st); err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	// 验活通过的条目必须解除旧熔断：applyProxyPool 会按 URL 继承旧条目的
+	// breakOpen，如果不在这里清掉，页面会显示「验活成功但可用 0」。
+	if len(verifiedOK) > 0 && s.m != nil && s.m.traffic != nil {
+		for _, u := range verifiedOK {
+			s.m.traffic.ProxyPoolClearBreak(u)
 		}
+		s.m.persistProxyBreaks()
 	}
 	if err := s.saveProxyPool(*st); err != nil {
 		writeErr(w, 500, err.Error())
 		return
 	}
-	writeJSON(w, 200, map[string]any{
+	out := map[string]any{
 		"ok": true, "added": added, "updated": updated, "invalid": invalid,
-		"total": len(st.Entries),
-	})
+		"rejected": rejected, "disabled": disabled, "total": len(st.Entries),
+		"verified": verify && !verifySkipped,
+	}
+	if verifySkipped {
+		out["verify_skipped"] = verifyNote
+	}
+	writeJSON(w, 200, out)
+}
+
+// targetReachableDirect 判断验活目标「本机直连」是否可达——不可达时验活没有意义
+// （所有代理都会报错），必须跳过而不是把整包代理判死。
+func targetReachableDirect(target string, timeout time.Duration) bool {
+	if strings.TrimSpace(target) == "" {
+		return false
+	}
+	hc := &http.Client{Timeout: timeout}
+	resp, err := hc.Get(target)
+	if err != nil {
+		return false
+	}
+	_ = resp.Body.Close()
+	return true
+}
+
+// probeProxies 用指定并发/超时验证一批代理（导入验活专用：比手动验证并发更高）。
+func probeProxies(ctx context.Context, entries []traffic.PoolEntry, target string, timeout time.Duration, concurrency int) []proxyCheckResult {
+	if concurrency < 1 {
+		concurrency = importVerifyConcurrency
+	}
+	results := make([]proxyCheckResult, len(entries))
+	sem := make(chan struct{}, concurrency)
+	var wg sync.WaitGroup
+	for i, e := range entries {
+		masked := maskProxy(e.URL)
+		wg.Add(1)
+		go func(idx int, entry traffic.PoolEntry, echo string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			results[idx] = checkOneProxy(ctx, idx, echo, entry.URL, target, timeout)
+		}(i, e, masked)
+	}
+	wg.Wait()
+	return results
 }
 
 // --- 连通性验证 ---
@@ -316,28 +656,30 @@ func (s *Server) proxyPoolCheck(w http.ResponseWriter, r *http.Request) {
 	for _, u := range req.URLs {
 		want[u] = true
 	}
-	selected := st.Entries
-	if len(want) > 0 {
-		selected = nil
-		for _, e := range st.Entries {
-			if want[e.URL] {
-				selected = append(selected, e)
-			}
+	type pick struct {
+		index int // 全量 entries 里的下标：前端勾选/删除失效依赖它，不能是子集下标
+		entry traffic.PoolEntry
+	}
+	selected := make([]pick, 0, len(st.Entries))
+	for i, e := range st.Entries {
+		if len(want) > 0 && !want[e.URL] {
+			continue
 		}
+		selected = append(selected, pick{index: i, entry: e})
 	}
 	results := make([]proxyCheckResult, len(selected))
 	sem := make(chan struct{}, proxyCheckConcurrency)
 	var wg sync.WaitGroup
-	for i, e := range selected {
+	for i, sel := range selected {
 		// 掩码 URL 用于回显;真实凭据只在请求时用。
-		masked := maskProxy(e.URL)
+		masked := maskProxy(sel.entry.URL)
 		wg.Add(1)
-		go func(idx int, entry traffic.PoolEntry, echo string) {
+		go func(slot int, fullIndex int, entry traffic.PoolEntry, echo string) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			results[idx] = checkOneProxy(context.Background(), idx, echo, entry.URL, target, timeout)
-		}(i, e, masked)
+			results[slot] = checkOneProxy(context.Background(), fullIndex, echo, entry.URL, target, timeout)
+		}(i, sel.index, sel.entry, masked)
 	}
 	wg.Wait()
 
@@ -349,7 +691,7 @@ func (s *Server) proxyPoolCheck(w http.ResponseWriter, r *http.Request) {
 		if t == nil {
 			continue
 		}
-		raw := selected[i].URL
+		raw := selected[i].entry.URL
 		if res.OK {
 			t.ProxyPoolReportOK(raw)
 		} else if req.BreakOnFail {
@@ -368,10 +710,12 @@ func (s *Server) proxyPoolCheck(w http.ResponseWriter, r *http.Request) {
 		"ok_count": countOK(results),
 	}
 	s.m.proxyCheckMu.Unlock()
+	s.m.persistProxyBreaks() // 手动验证同样落盘，重启后仍然跳过死代理
 
 	writeJSON(w, 200, map[string]any{
-		"target":  target,
-		"results": results,
+		"target":        target,
+		"entries_total": len(st.Entries),
+		"results":       results,
 	})
 }
 
@@ -511,11 +855,16 @@ func looksLikeIP(v string) bool {
 	return true
 }
 
-// maskProxy 隐藏凭据,只用于回显。
+// maskProxy 隐藏凭据,只用于回显（用户名保留、密码替换为 ****）。
 func maskProxy(raw string) string {
 	u, err := traffic.ValidateProxyURL(raw)
 	if err != nil {
 		return raw
+	}
+	if u.User != nil {
+		if _, has := u.User.Password(); has {
+			u.User = url.UserPassword(u.User.Username(), "****")
+		}
 	}
 	return u.String()
 }

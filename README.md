@@ -82,11 +82,25 @@ planner 是唯一意图生成者，worker 领取意图执行并写回双图（�
 - pgvector 语义检索；扩展或 embedder 缺失时自动降级关键词检索
 - Agent 工具：`search_knowledge`、`list_knowledge_categories`
 
+### 出口与代理
+
+- Clash / mihomo 内核管理：订阅拉取、节点分组/测速/五种出口模式、断点续传安装
+- 代理池：总开关、导入验活、熔断跨重启持久化、本机 Clash 端口接管
+- 严格出口：池已配置但全部熔断时失败关闭，不允许真实 IP 直连泄漏
+- SSH 跳板：凭据加密存保险库，本地 SOCKS5 一键入池
+- 统一出口变量：`EGRESS_PROXY` / `EGRESS_PROXY_CA`，Bash/job/nuclei/原生 HTTP 同源
+
 ### 资产与拓扑
 
 - 资产凭据：`discovered` / `verified` 关系，secret 不下发
 - 内网凭据：`GET /api/credentials/intranet`
 - 任务拓扑：节点 / 边 / 分组 / 便签 API，任务详情「拓扑」Tab
+
+### 运维与诊断
+
+- 诊断包导出：配置、运行指标、任务/意图/轨迹、日志聚合、流量/代理/LLM 统计
+- 宿主安装源：APT / PyPI 腾讯云、清华 TUNA 镜像
+- 会话吊销：吊销当前或全部设备，复用服务端 `auth_sessions`
 
 ---
 

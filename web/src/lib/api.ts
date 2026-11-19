@@ -43,6 +43,11 @@ import type {
   FindingDeepenResponse,
   FindingGroupsPage,
   FindingQuery,
+  HostInstallSources,
+  LocalProxyCandidate,
+  MihomoStatus,
+  ProxyPoolSubscription,
+  SSHProvider,
   FindingRetest,
   FindingStats,
   FindingStatus,
@@ -332,6 +337,8 @@ export const api = {
       body: JSON.stringify({ password }),
       headers: { "X-Setup-Token": setupToken.trim() },
     }),
+  revokeAllSessions: () => post<{ ok: boolean; revoked: string }>("/auth/revoke-all", { confirm: true }),
+  revokeCurrentSession: () => post<{ ok: boolean; revoked: string }>("/auth/revoke-current", {}),
   changePassword: (oldPassword: string, newPassword: string) =>
     post<{ ok: boolean; token?: string }>("/auth/change-password", { old_password: oldPassword, new_password: newPassword }),
 
@@ -1028,22 +1035,138 @@ export const api = {
   proxyPoolPut: (payload: {
     entries: { url: string; name: string; enabled: boolean; weight: number }[];
     strategy: string;
+    enabled?: boolean;
+    strict?: boolean;
+    /** 显式确认清空非空池（后端防误清空闸门）。 */
+    confirm_clear?: boolean;
   }) => put<ProxyPoolState>(`/proxypool`, payload),
   // 批量导入：一行一个代理，自动识别 host:port / http(s):// / socks5:// / host:port:user:pass
-  proxyPoolBulk: (payload: { text: string; mode?: "append" | "replace"; strategy?: string; weight?: number }) =>
+  proxyPoolBulk: (payload: {
+    text: string;
+    mode?: "append" | "replace";
+    strategy?: string;
+    weight?: number;
+    /** 默认 true：导入前逐条验活，连不通的不导入。 */
+    verify?: boolean;
+    verify_timeout_seconds?: number;
+    enabled?: boolean;
+  }) =>
     post<{
       ok: boolean;
       added: number;
       updated: number;
       total: number;
       invalid: { line: number; raw: string; reason: string }[];
+      rejected: { line: number; raw: string; reason: string }[];
+      /** 已存在但本次验活不通、被停用的条目数。 */
+      disabled?: number;
+      verified?: boolean;
+      verify_skipped?: string;
     }>(`/proxypool/bulk`, payload),
   // 连通性验证：urls 为空 = 全部已启用条目
+  // 订阅拉取（v0.7.3）：提取 http/https/socks5 节点；vmess 等只统计数量。
+  proxyPoolSubscriptionFetch: (url: string, includeYaml = true) =>
+    post<ProxyPoolSubscription>(`/proxypool/subscription/fetch`, {
+      url,
+      include_yaml: includeYaml,
+    }),
+  proxyPoolDetectLocal: (payload?: { ports?: number[]; target?: string; use?: boolean }) =>
+    post<{
+      ok: boolean;
+      target: string;
+      candidates: LocalProxyCandidate[];
+      added: number;
+    }>(`/proxypool/detect-local`, payload ?? {}),
+  proxyPoolMihomoStatus: () =>
+    get<{ ok: boolean; status: MihomoStatus; path: string }>(`/proxypool/mihomo`),
+  proxyPoolMihomoInstall: (payload?: {
+    proxy?: string;
+    url?: string;
+    sha256?: string;
+    path?: string;
+  }) =>
+    post<{
+      ok: boolean;
+      install: {
+        path: string;
+        version: string;
+        sha256: string;
+        source_url: string;
+        checksum_verified?: boolean;
+      };
+    }>(`/proxypool/mihomo/install`, {
+      proxy: payload?.proxy ?? "",
+      url: payload?.url ?? "",
+      sha256: payload?.sha256 ?? "",
+      path: payload?.path ?? "",
+    }),
+  proxyPoolMihomoStart: (payload: {
+    yaml?: string;
+    url?: string;
+    port?: number;
+    binary?: string;
+    outbound?: string;
+    /** group/node/load-balance/url-test/fallback（Clash 节点管理页） */
+    mode?: string;
+    /** 轮询/测速/故障转移使用的节点名 */
+    nodes?: string[];
+    use?: boolean;
+  }) =>
+    post<{
+      ok: boolean;
+      status: MihomoStatus;
+      proxy: string;
+      added: boolean;
+      note?: string;
+    }>(`/proxypool/mihomo/start`, payload),
+  proxyPoolMihomoStop: () =>
+    post<{ ok: boolean; removed: number }>(`/proxypool/mihomo/stop`, {}),
+  // 节点延迟测速：经 mihomo external-controller 的 /proxies/{name}/delay。
+  proxyPoolMihomoDelays: (payload: {
+    names?: string[];
+    target?: string;
+    timeout_seconds?: number;
+  }) =>
+    post<{
+      target: string;
+      results: { name: string; delay_ms: number; error?: string }[];
+    }>(`/proxypool/mihomo/delays`, payload),
   proxyPoolCheck: (payload: { urls?: string[]; target?: string; timeout_seconds?: number; break_on_fail?: boolean }) =>
     post<{
       target: string;
       results: { index: number; url: string; ok: boolean; latency_ms: number; exit_ip?: string; error?: string; checked_at: string }[];
     }>(`/proxypool/check`, payload),
+  // ---- SSH 跳板（v0.7.1）----
+  sshProviders: () => get<{ providers: SSHProvider[] }>(`/egress/ssh`),
+  createSSHProvider: (payload: {
+    name?: string;
+    host: string;
+    port: number;
+    user: string;
+    auth_kind: "key" | "password";
+    secret: string;
+  }) => post<{ provider: SSHProvider }>(`/egress/ssh`, payload),
+  deleteSSHProvider: (id: number) => del<{ ok: boolean }>(`/egress/ssh/${id}`),
+  startSSHProvider: (id: number) => post<{ ok: boolean; socks_addr: string }>(`/egress/ssh/${id}/start`, {}),
+  stopSSHProvider: (id: number) => post<{ stopped: boolean }>(`/egress/ssh/${id}/stop`, {}),
+  useSSHProvider: (id: number) => post<{ ok: boolean; socks_addr: string }>(`/egress/ssh/${id}/use`, {}),
+  // 诊断包：下载 zip（设置 + 运行指标 + 任务/目标/意图 + 轨迹 + 日志聚合 +
+  // 流量/代理/LLM 统计 + 完整性自检）。detail=true 带更大窗口与 worker 轨迹摘要。
+  exportDiagnostics: async (opts?: { detail?: boolean }) => {
+    let blob: Blob;
+    if (MOCK) {
+      blob = new Blob(["（demo）诊断包内容"], { type: "application/zip" });
+    } else {
+      const token = getToken();
+      const qs = opts?.detail ? "?detail=1" : "";
+      const r = await fetch(`/api/diagnostics/export${qs}`, {
+        headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      });
+      if (!r.ok) throw new Error(`诊断包导出失败: ${r.status}`);
+      blob = await r.blob();
+    }
+    triggerBlobDownload(blob, `pojun-diagnostics-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "")}.zip`);
+  },
   vulnintelStatus: () => get<VulnIntelStatus>(`/vulnintel/status`),
   vulnintelSaveConfig: (payload: VulnIntelConfigPatch) => put<{ ok: boolean }>(`/vulnintel/config`, payload),
   vulnintelSyncNow: () => post<{ accepted: boolean }>(`/vulnintel/sync`, {}),
@@ -1064,6 +1187,7 @@ export const api = {
     }>(`/tools/inventory`),
   // 宿主环境:体检(含一键安装可用性)+ 一键安装(由特权助手 pojun-hostd 执行)
   hostenvStatus: () => get<HostenvStatus>(`/hostenv/status`),
+  hostenvSaveSources: (sources: HostInstallSources) => put<HostInstallSources>(`/hostenv/sources`, sources),
   hostenvInstall: (id: string) => post<InstallJob>(`/hostenv/install`, { id }),
   hostenvInstallBatch: (ids: string[]) => post<InstallBatchResult>(`/hostenv/install-batch`, { ids }),
   hostenvJob: (jobId: string) => get<InstallJob>(`/hostenv/jobs/${jobId}`),

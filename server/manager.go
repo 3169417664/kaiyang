@@ -16,14 +16,15 @@ import (
 	"sync/atomic"
 	"time"
 
-	actool "github.com/Autumn-27/norma/tool"
 	"github.com/3169417664/kaiyang/agent"
 	pgdb "github.com/3169417664/kaiyang/db"
 	"github.com/3169417664/kaiyang/enrich"
 	"github.com/3169417664/kaiyang/guard"
 	"github.com/3169417664/kaiyang/intercept"
+	"github.com/3169417664/kaiyang/mihomo"
 	"github.com/3169417664/kaiyang/traffic"
 	"github.com/3169417664/kaiyang/vulnintel"
+	actool "github.com/Autumn-27/norma/tool"
 )
 
 // Task is one engagement: a description + goal + its own exploration store,
@@ -304,6 +305,7 @@ type Manager struct {
 	pg          *pgdb.DB
 	assets      *pgdb.AssetStore
 	traffic     *traffic.Traffic       // process-wide recording proxy (may be nil)
+	mihomo      *mihomo.Manager        // 本机 Clash.Meta 内核（订阅 YAML → mixed-port → 代理池入口）
 	enrich      *enrich.Engine         // engine-side asset auto-completion (DNS/HTTP)
 	interceptor *intercept.Interceptor // user-configured tool-call interception rules
 	vulnintel   *vulnintel.Store       // public CVE/KEV intel store (agent search_vulns reads it)
@@ -365,6 +367,11 @@ const (
 	// (http/https/socks5). Empty = direct. Distinct from web_search_proxy (which
 	// only routes the search backend) and the per-profile LLM proxy.
 	settingGlobalProxy = "global_proxy"
+	// settingEgressStrict 是「严格出口」开关（默认关，UI 可开）：池已配置但全部
+	// 熔断时不回退直连，让目标请求失败，避免真实 IP 泄漏。
+	settingEgressStrict = "egress_strict_proxy"
+	// settingEgressDirectFallback 是严格出口下的「直连但仍录制」兜底（默认关）。
+	settingEgressDirectFallback = "traffic_direct_record_fallback"
 	// settingInstallProxy 是「装东西」用的出网代理(http/https/socks5,空=直连)。
 	// 只作用于宿主工具安装时的 apt / curl / GitHub 下载,与 agent 的目标流量代理
 	// (settingGlobalProxy)、搜索代理、LLM 代理完全独立——国内环境常常需要一个
@@ -615,7 +622,8 @@ func NewManager(dir, proxyAddr string) (*Manager, error) {
 	if err := pg.EnsureLLMUsageTable(); err != nil {
 		log.Printf("[llmusage] create table: %v", err)
 	}
-	m := &Manager{dir: dir, pg: pg, assets: pg.Assets(), tasks: map[string]*Task{}, interceptor: intercept.New(pg)}
+	mihomoMgr := mihomo.New(dir)
+	m := &Manager{dir: dir, pg: pg, assets: pg.Assets(), tasks: map[string]*Task{}, interceptor: intercept.New(pg), mihomo: mihomoMgr}
 	if proxyAddr != "" {
 		tr, err := traffic.Open(filepath.Join(dir, "traffic"), proxyAddr)
 		if err != nil {
@@ -652,6 +660,10 @@ func NewManager(dir, proxyAddr string) (*Manager, error) {
 	// Asset auto-completion engine (§5): HTTP probes routed through the recording
 	// proxy (via m.ProxyAddr, which honors the traffic-capture toggle).
 	m.trafficOn = pg.GetBool(settingTrafficCapture, false)
+	if m.traffic != nil {
+		m.traffic.SetStrictEgress(pg.GetBool(settingEgressStrict, false))
+		m.traffic.SetDirectRecordFallback(pg.GetBool(settingEgressDirectFallback, false))
+	}
 	// LLM 录制开关（默认关）。录制器每次调用时读取此标志。
 	m.llmRecOn = pg.GetBool(settingLLMRecord, false)
 	// Load persisted web-search config (default: off, ddgs).
@@ -1046,10 +1058,29 @@ func (m *Manager) ProxyAddr() string {
 	if m.traffic != nil && m.TrafficEnabled() {
 		return m.traffic.ProxyAddr()
 	}
+	// 捕获关闭时池仍然生效：直接从池里挑一个出口注入 Agent 的 HTTP_PROXY。
+	if m.traffic != nil {
+		if p := m.traffic.ProxyPoolPick(""); p != "" {
+			return p
+		}
+		if m.traffic.StrictEgress() && m.traffic.ProxyPoolConfigured() {
+			m.mu.RLock()
+			g := m.globalProxy
+			m.mu.RUnlock()
+			if g != "" {
+				return g
+			}
+			return strictEgressBlockProxy
+		}
+	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.globalProxy
 }
+
+// strictEgressBlockProxy 是严格出口的哨兵地址（连接必然失败）：宁可请求失败，
+// 也不让目标流量从真实 IP 直连出去。
+const strictEgressBlockProxy = "http://127.0.0.1:1"
 
 // ProxyCACert returns the CA cert path agents must trust to verify HTTPS through
 // the egress proxy. Non-empty ONLY when traffic capture is on (the MITM re-signs
@@ -1155,6 +1186,9 @@ func (m *Manager) SetGlobalProxy(raw string) error {
 func (m *Manager) Close() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.mihomo != nil {
+		_ = m.mihomo.Stop()
+	}
 	if m.traffic != nil {
 		m.traffic.Close()
 	}

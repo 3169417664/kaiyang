@@ -457,6 +457,7 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	// runs in a detached goroutine so it never adds latency to this round.
 	p.compactor.OnPlannerRound(ctx, ts)
 	tsx := NewToolSet(ts, "planner")
+	tsx.SetEgressProxy(p.proxyAddr, p.proxyCACert) // 原生 http_request/session_login 与 Bash 同源出口
 	tsx.SetReviewEnabled(p.reviewEnabledFn)
 	tsx.SetFindingRecorder(p.findingRecorder)
 	tsx.SetScopeFlags(p.scopeGuard, p.scopeInheritWrites, p.crossTaskNotifyDedup)

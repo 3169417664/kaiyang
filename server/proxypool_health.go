@@ -11,7 +11,10 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -52,6 +55,9 @@ func (m *Manager) RunProxyPoolHealthCheck() {
 	defer m.proxyCheckInFlight.Store(false)
 
 	st := loadProxyPoolState(m.pg)
+	if !st.Enabled {
+		return // 总开关关闭：不做无意义的探测
+	}
 	enabled := make([]traffic.PoolEntry, 0, len(st.Entries))
 	for _, e := range st.Entries {
 		if e.Enabled {
@@ -79,6 +85,33 @@ func (m *Manager) RunProxyPoolHealthCheck() {
 	}
 	if dead > 0 {
 		log.Printf("[proxypool] 健康检查：%d/%d 个上游不可用，已熔断", dead, len(enabled))
+		// 本机 mihomo 进程死亡后自动拉起（仅当失败的出口是 loopback）：mihomo 是
+		// 平台自己管理的本地内核，没有 systemd 守护；不自动恢复会让录制代理整条
+		// 出口长期失效（任务 21 实测 6 小时无流量）。
+		if dead == len(enabled) && m.mihomo != nil {
+			for _, e := range enabled {
+				u, err := url.Parse(e.URL)
+				if err != nil || u.Hostname() != "127.0.0.1" {
+					continue
+				}
+				port, _ := strconv.Atoi(u.Port())
+				if st, rerr := m.mihomo.RestartFromConfig(ctx, port); rerr != nil {
+					log.Printf("[proxypool] 自动拉起 mihomo 失败: %v", rerr)
+				} else if st.Running {
+					log.Printf("[proxypool] 已自动拉起 mihomo（端口 %d），下一轮健康检查复验", st.Port)
+				}
+				break
+			}
+		}
+	}
+	// 池非空但 0 可用：必须显式告警。严格出口下请求会快速失败（不外泄真实 IP），
+	// 非严格模式才会回退直连/全局代理——文案必须区分，否则会误导 worker。
+	if n := m.traffic.ProxyPoolAvailable(); n == 0 && len(enabled) > 0 {
+		if m.traffic.StrictEgress() && m.traffic.ProxyPoolConfigured() {
+			log.Printf("[proxypool] 警告：池内 %d 个上游全部不可用，且严格出口已阻止直连——目标请求会快速失败（真实 IP 未暴露），需恢复上游或临时关闭严格出口", len(enabled))
+		} else {
+			log.Printf("[proxypool] 警告：池内 %d 个上游全部不可用，任务出口已回退直连/全局代理（真实 IP 暴露）", len(enabled))
+		}
 	}
 	// 页面上的「最近检查」时间戳与手动验证共用同一份快照。
 	m.proxyCheckMu.Lock()
@@ -90,6 +123,42 @@ func (m *Manager) RunProxyPoolHealthCheck() {
 		"auto":     true,
 	}
 	m.proxyCheckMu.Unlock()
+	// 把熔断结果落盘：下一次重启仍然跳过这些死代理。
+	m.persistProxyBreaks()
+}
+
+// restoreProxyBreaks 恢复上次进程保存的熔断状态：不恢复的话，重启后所有已判定
+// 不通的出口都会重新变「可用」，任务要白等一轮超时（现网 240 条里 231 条死代理）。
+func (m *Manager) restoreProxyBreaks() {
+	if m == nil || m.traffic == nil || m.pg == nil {
+		return
+	}
+	raw, ok, err := m.pg.GetSetting(settingProxyBreaks)
+	if err != nil || !ok || strings.TrimSpace(raw) == "" {
+		return
+	}
+	state := map[string]int64{}
+	if json.Unmarshal([]byte(raw), &state) != nil {
+		return
+	}
+	if n := m.traffic.RestoreProxyBreaks(state); n > 0 {
+		log.Printf("[proxypool] 已恢复 %d 个出口的熔断状态（重启不复活死代理）", n)
+	}
+}
+
+// persistProxyBreaks 把当前未到期的熔断状态写回 settings，跨重启保留。
+func (m *Manager) persistProxyBreaks() {
+	if m == nil || m.traffic == nil || m.pg == nil {
+		return
+	}
+	state := m.traffic.SnapshotProxyBreaks()
+	raw, err := json.Marshal(state)
+	if err != nil {
+		return
+	}
+	if err := m.pg.SetSetting(settingProxyBreaks, string(raw)); err != nil {
+		log.Printf("[proxypool] 熔断状态持久化失败: %v", err)
+	}
 }
 
 // proxyTools 返回给 agent 的代理池工具。采集中关闭时池不生效,工具会明确说明
@@ -130,18 +199,39 @@ func (s *Server) proxyStatusResult() (actool.Result, error) {
 		return actool.Errorf("代理池未初始化"), nil
 	}
 	st := s.loadProxyPool()
-	out := map[string]any{
-		"strategy":      st.Strategy,
-		"total":         len(st.Entries),
-		"capturing":     s.m.TrafficEnabled(),
-		"global_proxy":  s.m.GlobalProxy() != "",
-		"upstreams":     s.m.traffic.ProxyPoolStatus(),
-		"health_check":  settingOr(s.m.pg, settingProxyCheckTarget, defaultProxyCheckTarget),
+	available := 0
+	if s.m.traffic != nil {
+		available = s.m.traffic.ProxyPoolAvailable()
 	}
-	if len(st.Entries) == 0 {
+	eff, socks5Blocked := s.effectivePoolEntries(st)
+	out := map[string]any{
+		"enabled":        st.Enabled,
+		"strategy":       st.Strategy,
+		"total":          len(st.Entries),
+		"usable":         available,
+		"effective":      len(eff),
+		"socks5_blocked": socks5Blocked,
+		"capturing":      s.m.TrafficEnabled(),
+		"global_proxy":   s.m.GlobalProxy() != "",
+		"upstreams":      s.m.traffic.ProxyPoolStatus(),
+		"health_check":   settingOr(s.m.pg, settingProxyCheckTarget, defaultProxyCheckTarget),
+	}
+	if socks5Blocked > 0 {
+		out["socks5_note"] = fmt.Sprintf("有 %d 条 socks5 上游因默认策略未生效（历史版本 socks5 拨号失败会 panic）。如需启用请在设置开启 proxypool_allow_socks5。", socks5Blocked)
+	}
+	switch {
+	case len(st.Entries) == 0:
 		out["note"] = "代理池为空：流量直接出本机（或走「全局出口代理」）。要轮换出口请在 系统 → 代理池 配置。"
-	} else if !s.m.TrafficEnabled() {
-		out["note"] = "代理池已配置但【流量捕获未开启】，池不生效——worker 的目标流量需经捕获代理才会走出口轮换。"
+	case !st.Enabled:
+		out["note"] = "代理池已被总开关停用：出口回退全局代理/直连。"
+	case available == 0:
+		if s.m.traffic != nil && s.m.traffic.StrictEgress() && s.m.traffic.ProxyPoolConfigured() {
+			out["note"] = "池内全部上游当前熔断，且严格出口已阻止直连：目标请求会快速失败（真实 IP 未暴露）。先恢复上游或临时关闭严格出口再继续。"
+		} else {
+			out["note"] = "池内全部上游当前熔断：出口已回退直连/全局代理（真实 IP 暴露）。先验证连通性再继续。"
+		}
+	case !s.m.TrafficEnabled():
+		out["note"] = "代理池已启用（流量捕获关闭）：Agent 的 Bash/WebFetch 直接注入池内出口，每个 worker 固定一个上游，无流量留痕。"
 	}
 	return jsonResult(out)
 }

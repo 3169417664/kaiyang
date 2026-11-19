@@ -283,13 +283,13 @@ GROUP BY category.id`, *categoryID))
 
 // TaskCategoryPreset 是场景分类携带的建任务默认值。
 type TaskCategoryPreset struct {
-	ReviewEnabled       bool
-	PlannerTemplateID   int64
-	WorkerTemplateID    int64
-	DefaultDescription  string
-	AssetMode           string
-	SeedFirstIntent     bool
-	SeedExecutor        string
+	ReviewEnabled      bool
+	PlannerTemplateID  int64
+	WorkerTemplateID   int64
+	DefaultDescription string
+	AssetMode          string
+	SeedFirstIntent    bool
+	SeedExecutor       string
 }
 
 func (d *DB) GetTaskCategoryPreset(id int64) (*TaskCategoryPreset, error) {
