@@ -773,9 +773,17 @@ DELETE FROM assets a USING deletable d WHERE a.id=d.id`, id, expID)
 	}
 	// llm_usage (the token metering ledger) is intentionally NOT deleted with the
 	// task — it is kept as historical accounting even after the task is gone.
-	// autopilot_events 用 TEXT task_id 且无外键，任务删除时显式清理。
-	if _, err := tx.Exec(`DELETE FROM autopilot_events WHERE task_id=$1`, strconv.FormatInt(id, 10)); err != nil {
-		return result, err
+	// 以下表用 TEXT task_id 且无外键，任务硬删除时必须显式清理，否则审批角标
+	// 与进度记录会永久残留（上游审计 F2）。
+	taskKey := strconv.FormatInt(id, 10)
+	for _, q := range []string{
+		`DELETE FROM autopilot_events WHERE task_id=$1`,
+		`DELETE FROM intercept_pending WHERE task_id=$1`,
+		`DELETE FROM task_progress WHERE task_id=$1`,
+	} {
+		if _, err := tx.Exec(q, taskKey); err != nil {
+			return result, err
+		}
 	}
 	if _, err := tx.Exec(`DELETE FROM tasks WHERE id=$1`, id); err != nil {
 		return result, err

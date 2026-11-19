@@ -326,7 +326,12 @@ export const api = {
   authStatus: () => get<{ initialized: boolean }>("/auth/status"),
   login: (username: string, password: string) =>
     post<{ token: string; must_change_password?: boolean }>("/auth/login", { username, password }),
-  initPassword: (password: string) => post<{ token: string }>("/auth/init", { password }),
+  initPassword: (password: string, setupToken: string) =>
+    http<{ token: string }>("/auth/init", {
+      method: "POST",
+      body: JSON.stringify({ password }),
+      headers: { "X-Setup-Token": setupToken.trim() },
+    }),
   changePassword: (oldPassword: string, newPassword: string) =>
     post<{ ok: boolean; token?: string }>("/auth/change-password", { old_password: oldPassword, new_password: newPassword }),
 

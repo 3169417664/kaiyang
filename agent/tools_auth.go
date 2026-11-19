@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"sort"
 	"strings"
 
 	actool "github.com/Autumn-27/norma/tool"
@@ -111,13 +110,29 @@ func (t *ToolSet) authRequest() actool.CoreTool {
 			}
 			idx := a.AuthIndex
 			if idx < 0 {
-				idx = 0
+				// 未传索引时选第一条【有效】凭据；无效条目占位保留原数组顺序。
+				idx = -1
+				for i, e := range entries {
+					if e.valid() {
+						idx = i
+						break
+					}
+				}
+				if idx < 0 {
+					return actool.Errorf(fmt.Sprintf(
+						"资产 %d 上没有有效凭据条目（共 %d 条占位）", a.AssetID, len(entries))), nil
+				}
 			}
 			if idx >= len(entries) {
 				return actool.Errorf(fmt.Sprintf(
 					"资产 %d 上只有 %d 条凭据，auth_index=%d 越界", a.AssetID, len(entries), idx)), nil
 			}
 			entry := entries[idx]
+			if !entry.valid() {
+				return actool.Errorf(fmt.Sprintf(
+					"资产 %d 的 auth_index=%d 不是有效凭据条目；有效索引：%s",
+					a.AssetID, idx, validAuthIndices(entries))), nil
+			}
 
 			method := strings.ToUpper(strings.TrimSpace(a.Method))
 			if method == "" {
@@ -145,12 +160,15 @@ func (t *ToolSet) authRequest() actool.CoreTool {
 // password/token/type/description）。这里做宽松解析：认得就用，不认得的
 // 键忽略，但**至少要有一个可用字段**才算一条凭据。
 func parseAuthEntries(raw []map[string]any) []authEntry {
-	out := []authEntry{}
+	// 与原始数组【等长同序】：list_assets 给模型看的是原数组顺序，若这里过滤/
+	// 重排，模型选中的 auth_index 会与实际发出的凭据错位（上游审计 F1）。
+	out := make([]authEntry, 0, len(raw))
 	for _, m := range raw {
+		var e authEntry
 		if m == nil {
+			out = append(out, e)
 			continue
 		}
-		var e authEntry
 		for k, v := range m {
 			s, _ := v.(string)
 			s = strings.TrimSpace(s)
@@ -167,21 +185,27 @@ func parseAuthEntries(raw []map[string]any) []authEntry {
 				e.Description = s
 			}
 		}
-		if e.Username == "" && e.Password == "" && e.Token == "" {
-			continue // 没有可用字段，不算一条凭据
-		}
 		out = append(out, e)
 	}
-	// 排序：token 优先（无需拼装），其次账号密码——默认 auth_index=0 拿到最省事的那条。
-	sort.SliceStable(out, func(i, j int) bool {
-		ti := out[i].Token != ""
-		tj := out[j].Token != ""
-		if ti != tj {
-			return ti
-		}
-		return false
-	})
 	return out
+}
+
+// valid 表示这条占位记录确实带有可用凭据。
+func (e authEntry) valid() bool {
+	return e.Username != "" || e.Password != "" || e.Token != ""
+}
+
+func validAuthIndices(entries []authEntry) string {
+	var idx []string
+	for i, e := range entries {
+		if e.valid() {
+			idx = append(idx, fmt.Sprint(i))
+		}
+	}
+	if len(idx) == 0 {
+		return "无"
+	}
+	return strings.Join(idx, ",")
 }
 
 // authKind 描述这条凭据的形态（用于返回结果里的说明，不含凭据值）。

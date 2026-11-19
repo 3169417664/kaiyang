@@ -28,6 +28,7 @@ import (
 
 	"github.com/3169417664/kaiyang/hosttools"
 	"github.com/3169417664/kaiyang/proxyprobe"
+	"github.com/3169417664/kaiyang/selfupdate"
 )
 
 // State 任务状态。
@@ -851,6 +852,12 @@ func (s *Server) Handler() http.Handler {
 		}
 		if !ValidVersionTag(req.Tag) {
 			writeJSON(w, 400, map[string]any{"error": "版本号格式非法: " + req.Tag})
+			return
+		}
+		// 上游审计 B9：拒绝降级。主程序被手动回滚时不能把 root 助手一起拽回
+		// 旧版、静默撤销已经装上的安全修复。
+		if cmp, ok := selfupdate.CompareVersions(req.Tag, s.Version); ok && cmp < 0 {
+			writeJSON(w, 400, map[string]any{"error": "拒绝降级：目标 " + req.Tag + " 低于当前 " + s.Version})
 			return
 		}
 		cleanProxy, err := ValidateProxy(req.Proxy)

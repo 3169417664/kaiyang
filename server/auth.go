@@ -158,6 +158,32 @@ func dummyPasswordHash() []byte {
 	return dummyHashVal
 }
 
+// setupTokenFilename 是首次初始化令牌文件名（dataDir 下，0600）。
+// 公网部署后、管理员完成 /setup 之前存在抢占窗口：未认证者可抢先 POST
+// /api/auth/init 设置自己的密码接管实例。初始化必须携带该 token。
+const setupTokenFilename = "setup-token"
+
+func ensureSetupToken(dataDir string) (string, string, error) {
+	if strings.TrimSpace(dataDir) == "" {
+		return "", "", errors.New("dataDir 为空，无法生成 setup token")
+	}
+	path := filepath.Join(dataDir, setupTokenFilename)
+	if b, err := os.ReadFile(path); err == nil {
+		if tok := strings.TrimSpace(string(b)); tok != "" {
+			return tok, path, nil
+		}
+	}
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		return "", "", err
+	}
+	tok := hex.EncodeToString(key)
+	if err := os.WriteFile(path, []byte(tok), 0o600); err != nil {
+		return "", "", err
+	}
+	return tok, path, nil
+}
+
 func randomTokenID() (string, error) {
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
@@ -423,6 +449,11 @@ func (s *Server) bootstrapRBAC() {
 		return
 	}
 	s.m.pg.PruneExpiredAuthSessions()
+	if needs, _ := s.m.pg.RBACNeedsBootstrap(); needs {
+		if _, path, err := ensureSetupToken(s.dataDir); err == nil {
+			log.Printf("[auth] 首次初始化令牌: %s（0600，/setup 需在请求头 X-Setup-Token 携带）", path)
+		}
+	}
 	if strings.TrimSpace(legacyHash) != "" {
 		log.Printf("[rbac] 多用户权限就绪（旧密码已迁移为 admin）")
 	} else {
@@ -470,6 +501,19 @@ func (s *Server) authInit(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 403, "已初始化")
 		return
 	}
+	// 未初始化实例必须携带一次性 setup token，防止公网上先到的请求抢占管理员。
+	token, tokenPath, terr := ensureSetupToken(s.dataDir)
+	if terr != nil {
+		writeInternalError(w, "auth init setup token", terr)
+		return
+	}
+	if r.Header.Get("X-Setup-Token") != token {
+		w.Header().Set("X-Setup-Token-Path", tokenPath)
+		pg.RecordAudit("", "auth", "init", "fail", ip, "缺少或错误的 setup token", nil)
+		writeErr(w, 403, "首次初始化需要 setup token：读取服务器上的 "+tokenPath+
+			"，放在请求头 X-Setup-Token 中重试（本地部署见启动日志）")
+		return
+	}
 	var req struct {
 		Password string `json:"password"`
 	}
@@ -497,6 +541,7 @@ func (s *Server) authInit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = pg.SetSetting(authPassKey, string(hash)) // 兼容回滚
+	_ = os.Remove(filepath.Join(s.dataDir, setupTokenFilename))
 	u, err := pg.GetRBACUserByID("admin")
 	if err != nil {
 		writeErr(w, 500, "管理员创建失败")
