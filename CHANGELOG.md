@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-19
+
 ### 新功能（同步上游 Pojun v0.4.83–v0.4.89）
 
 - **代理全链路**：mihomo/Clash 内核安装与启停、订阅拉取（Clash YAML / URI / base64）、
