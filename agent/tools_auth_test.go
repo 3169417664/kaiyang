@@ -12,18 +12,20 @@ func TestParseAuthEntriesRecognizesCommonKeys(t *testing.T) {
 	raw := []map[string]any{
 		{"type": "wordpress", "username": "admin", "password": "p@ss"},
 		{"type": "bearer", "token": "abc.def.ghi"},
-		{"user": "bob", "pass": "secret"},      // 键名变体
+		{"user": "bob", "pass": "secret"},    // 键名变体
 		{"token": "tk", "description": "后台"}, // 带说明
-		{"nothing": "here"},                   // 无可用字段 → 不算一条
+		{"nothing": "here"},                  // 无可用字段 → 不算一条
 	}
 	entries := parseAuthEntries(raw)
-	// 4 条有效凭据（wordpress / bearer / bob / tk），第 5 条无可用字段被跳过。
-	if len(entries) != 4 {
-		t.Fatalf("解析出 %d 条凭据，应为 4 条（无可用字段的不算）", len(entries))
+	// 与原始数组等长同序（无效条目占位），保证 list_assets 的索引与实际取用一致。
+	if len(entries) != 5 {
+		t.Fatalf("解析出 %d 条，应为 5 条（无效条目占位）", len(entries))
 	}
-	// token 优先排前面（默认 auth_index=0 拿到最省事的那条）。
-	if entries[0].Token == "" {
-		t.Errorf("token 类凭据应排在最前，实际首条是 %+v", entries[0])
+	if entries[0].Username != "admin" || entries[1].Token == "" {
+		t.Errorf("顺序应与原数组一致，实际: %+v", entries[:2])
+	}
+	if entries[4].valid() {
+		t.Errorf("第 5 条无可用字段，应标记无效: %+v", entries[4])
 	}
 	// 键名变体要认出来。
 	found := false
@@ -40,8 +42,8 @@ func TestParseAuthEntriesRecognizesCommonKeys(t *testing.T) {
 // 没有凭据时返回空——工具要如实报「未登记凭据」，不能编。
 func TestParseAuthEntriesEmptyWhenNoUsableFields(t *testing.T) {
 	entries := parseAuthEntries([]map[string]any{{"foo": "bar"}, {"note": "x"}})
-	if len(entries) != 0 {
-		t.Errorf("无凭据字段时应返回空，实际 %d 条", len(entries))
+	if len(entries) != 2 || entries[0].valid() || entries[1].valid() {
+		t.Errorf("无凭据字段时应保留占位但全部无效，实际 %+v", entries)
 	}
 }
 

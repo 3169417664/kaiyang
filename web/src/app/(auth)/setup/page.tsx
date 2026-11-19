@@ -14,6 +14,7 @@ export default function SetupPage() {
   const router = useRouter();
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
+  const [setupToken, setSetupToken] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [checking, setChecking] = useState(true);
@@ -44,10 +45,14 @@ export default function SetupPage() {
       setError("密码长度至少 8 位");
       return;
     }
+    if (!setupToken.trim()) {
+      setError("请输入服务器 data/setup-token 文件中的初始化令牌");
+      return;
+    }
     setLoading(true);
     setError("");
     try {
-      const { token } = await api.initPassword(password);
+      const { token } = await api.initPassword(password, setupToken);
       auth.setToken(token);
       router.replace("/function/tasks");
     } catch (err) {
@@ -81,6 +86,19 @@ export default function SetupPage() {
             </div>
           ) : (
             <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+              <div className="space-y-1.5">
+                <Label htmlFor="setup-token">初始化令牌</Label>
+                <Input
+                  id="setup-token"
+                  value={setupToken}
+                  onChange={(e) => setSetupToken(e.target.value)}
+                  placeholder="服务器 data/setup-token 文件内容"
+                  autoComplete="off"
+                />
+                <p className="text-muted-foreground text-xs">
+                  公网实例必须携带该令牌，防止未授权者抢先初始化。文件权限 0600。
+                </p>
+              </div>
               <div className="space-y-1.5">
                 <Label htmlFor="password">新密码</Label>
                 <Input

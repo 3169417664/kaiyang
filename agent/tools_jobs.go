@@ -169,10 +169,12 @@ func (t *ToolSet) jobStart() actool.CoreTool {
 				return actool.Errorf("任务共享目录不可用（runDir 未注入）"), nil
 			}
 			// 暂停/删除清理（KillJobsForTaskDir）持写锁。这里把「启动 + 元数据落盘」
-			// 整体放进读锁：清理要么在启动前完成（随后 ctx 检查拒绝），要么等登记
-			// 完成后再扫到并杀掉，不会漏掉中途启动的作业。
-			jobLifecycleMu.RLock()
-			defer jobLifecycleMu.RUnlock()
+			// 整体放进写锁：①清理要么在启动前完成（随后 ctx 检查拒绝），要么等登记
+			// 完成后再扫到并杀掉，不会漏掉中途启动的作业；②同名并发启动被串行化，
+			// 两个请求不会各自启动一个进程、后写者覆盖 meta 把先启动的进程变成
+			// 清理扫不到的孤儿（上游审计 F3）。job 启动频率低，串行化无感知成本。
+			jobLifecycleMu.Lock()
+			defer jobLifecycleMu.Unlock()
 			if err := ctx.Err(); err != nil {
 				return actool.Errorf("任务已暂停或执行已取消，拒绝启动后台作业"), nil
 			}

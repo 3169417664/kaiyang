@@ -1116,7 +1116,7 @@ func (s *Server) Handler() http.Handler {
 	// /api/* goes through CORS + JWT; everything else is served by the embedded
 	// frontend (public — auth is enforced client-side and on the API). With the
 	// no-embed build the webui handler just 404s (run `next dev` separately).
-	api := accessLog(securityHeaders(s.requireAuth(mux)))
+	api := accessLog(securityHeaders(limitRequestBody(s.requireAuth(mux))))
 	root := http.NewServeMux()
 	root.Handle("/api/", api)
 	root.Handle("/", s.webuiHandler())
@@ -4620,6 +4620,32 @@ func (s *Server) gc(w http.ResponseWriter, r *http.Request) {
 // securityHeaders 替代了原来的 cors 中间件：前端与 API 同源部署，
 // Access-Control-Allow-Origin:* 在这里没有任何正当用途，只会放宽跨站读取。
 // 同时补上公网部署需要的基础安全头。
+// maxAPIBody 是已认证 JSON 请求体的默认上限。绕过 decode() 直连
+// json.NewDecoder 的 handler 也会被它罩住；否则认证用户可用单个超大请求打爆内存。
+const maxAPIBody = 32 << 20
+
+// limitRequestBody 给所有 API 请求体设上限。两个自带更大 MaxBytesReader 的
+// 文件上传端点（workspace 512MB / chat 128MB）显式豁免。
+func limitRequestBody(next http.Handler) http.Handler {
+	exempt := map[string]bool{
+		"POST /api/workspace/upload": true,
+		"POST /api/chat/upload":      true,
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if exempt[r.Method+" "+r.URL.Path] {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if r.ContentLength > maxAPIBody {
+			writeErr(w, http.StatusRequestEntityTooLarge,
+				fmt.Sprintf("请求体过大（上限 %d MB）", maxAPIBody>>(10*3)))
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, maxAPIBody)
+		next.ServeHTTP(w, r)
+	})
+}
+
 func securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()

@@ -4,6 +4,23 @@
 
 ## [Unreleased]
 
+### 安全修复（移植上游 Pojun v0.4.87–v0.4.89 审计项）
+
+- **B2 初始化抢占**：未初始化实例生成 `data/setup-token`（0600），`/api/auth/init`
+  必须携带 `X-Setup-Token`；`/setup` 页增加令牌输入框。
+- **B3 请求体上限**：所有 API 默认 32MB，workspace/chat 两个大上传端点显式豁免。
+- **B9 hostd 拒绝降级**：`/self-upgrade` 目标低于当前版本直接 400；主服务对齐
+  时若助手版本更高则跳过，避免回滚主程序把 root 助手一起降级。
+- **F1 凭据索引错位**：`parseAuthEntries` 与原始 auth 数组等长同序，无效条目
+  占位并在取用时明确报错。
+- **F2 级联删除缺口**：任务硬删除补齐 `intercept_pending`、`task_progress`。
+- **F3 同名作业竞态**：`job_start` 启动+登记改为写锁串行化，避免产生清理
+  扫不到的孤儿进程。
+- **F4 poc_scaffold 命令注入假阴性**：修正 `uid=\d+\(` 正则的双重转义。
+- **F5/F6 LLM 池记账**：非转移失败不再清零累计失败计数；流式中途失败计入熔断。
+- **目标侧去标识**：PoC 脚手架的 canary/boundary/弱口令表、`http_probe`/`js_audit`
+  脚本名与验证 marker 去掉产品名，避免形成可关联的假 IoC。
+
 ## [0.1.1] - 2026-11-19
 
 ### 安全修复（2026-11-18 审计）
