@@ -34,6 +34,9 @@ func (m *Manager) StartProxyPoolHealthCheck() {
 		return
 	}
 	go func() {
+		// 服务重启会把本机 mihomo 一起带走（它是本进程的子进程）。先立即恢复，
+		// 否则要等下面 90s 启动延迟后的首轮巡检，这段时间池里的本机出口是死的。
+		m.reviveLocalMihomo()
 		// 启动延迟：避开进程刚起来的流量高峰，也给 hostd/traffic 代理留出时间。
 		time.Sleep(90 * time.Second)
 		for {
@@ -45,6 +48,31 @@ func (m *Manager) StartProxyPoolHealthCheck() {
 
 // RunProxyPoolHealthCheck probes every enabled upstream once and melts down the
 // dead ones. Safe to call from the API (manual "check all") as well.
+// reviveLocalMihomo 在服务启动时按池里保存的本地端口恢复 mihomo 内核。
+// 只处理 127.0.0.1 条目；找不到或已运行则什么都不做。
+func (m *Manager) reviveLocalMihomo() {
+	if m == nil || m.mihomo == nil || m.pg == nil {
+		return
+	}
+	st := loadProxyPoolState(m.pg)
+	for _, e := range st.Entries {
+		if !e.Enabled {
+			continue
+		}
+		u, err := url.Parse(e.URL)
+		if err != nil || u.Hostname() != "127.0.0.1" {
+			continue
+		}
+		port, _ := strconv.Atoi(u.Port())
+		if s, err := m.mihomo.RestartFromConfig(context.Background(), port); err != nil {
+			log.Printf("[proxypool] 启动恢复 mihomo 失败: %v", err)
+		} else if s.Running {
+			log.Printf("[proxypool] 启动时已恢复本机 mihomo（端口 %d）", s.Port)
+		}
+		return
+	}
+}
+
 func (m *Manager) RunProxyPoolHealthCheck() {
 	if m == nil || m.traffic == nil || m.pg == nil {
 		return
@@ -88,9 +116,15 @@ func (m *Manager) RunProxyPoolHealthCheck() {
 		// 本机 mihomo 进程死亡后自动拉起（仅当失败的出口是 loopback）：mihomo 是
 		// 平台自己管理的本地内核，没有 systemd 守护；不自动恢复会让录制代理整条
 		// 出口长期失效（任务 21 实测 6 小时无流量）。
-		if dead == len(enabled) && m.mihomo != nil {
-			for _, e := range enabled {
-				u, err := url.Parse(e.URL)
+		// 本机内核的复活不应要求「全池都挂」：池里只要还有别的可用上游
+		// （例如手工加的 ProxyCat），原条件 dead==len(enabled) 永远不成立，
+		// mihomo 会一直躺在条目里显示不可用。这里改为：只要本机条目是死的就拉起。
+		if m.mihomo != nil {
+			for i, res := range results {
+				if res.OK {
+					continue
+				}
+				u, err := url.Parse(enabled[i].URL)
 				if err != nil || u.Hostname() != "127.0.0.1" {
 					continue
 				}

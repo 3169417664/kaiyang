@@ -176,3 +176,27 @@ func TestParseMirrors(t *testing.T) {
 		t.Fatalf("empty input must yield none")
 	}
 }
+
+// GitHub API 的 digest 是压缩包摘要；安装器必须接受它，而不是只认解压后二进制的 SHA。
+func TestInstallFromURLAcceptsCompressedSHA(t *testing.T) {
+	payload := []byte("mihomo-binary")
+	body := gzBytes(t, payload)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(body)
+	}))
+	defer srv.Close()
+	sum := sha256.Sum256(body)
+	res, err := mInstallFromURL(t, srv.URL+"/mihomo-linux-amd64-v1.gz", hex.EncodeToString(sum[:]))
+	if err != nil {
+		t.Fatalf("install url with compressed sha: %v", err)
+	}
+	if !res.ChecksumVerified {
+		t.Fatal("expected verified checksum")
+	}
+}
+
+func mInstallFromURL(t *testing.T, url, sha string) (InstallResult, error) {
+	t.Helper()
+	m := New(t.TempDir())
+	return m.InstallFromURL(context.Background(), url, sha, "")
+}

@@ -958,6 +958,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/proxypool", s.proxyPoolPut)
 	mux.HandleFunc("POST /api/proxypool/bulk", s.proxyPoolBulk)
 	mux.HandleFunc("POST /api/proxypool/check", s.proxyPoolCheck)
+	// 前端「Clash 节点管理 → 拉取订阅」依赖此路由；上游漏注册会导致 404。
+	mux.HandleFunc("POST /api/proxypool/subscription/fetch", s.proxyPoolSubscriptionFetch)
+	// 「检测本机 Clash」入口；上游同样漏注册，前端点击必然 404。
+	mux.HandleFunc("POST /api/proxypool/detect-local", s.proxyPoolDetectLocal)
 	mux.HandleFunc("GET /api/proxypool/mihomo", s.proxyPoolMihomoStatus)
 	mux.HandleFunc("POST /api/proxypool/mihomo/install", s.proxyPoolMihomoInstall)
 	mux.HandleFunc("POST /api/proxypool/mihomo/start", s.proxyPoolMihomoStart)
