@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-11-20
+
 ### 修复（2026-11-20 部署反馈）
 
 - 注册漏掉的 `POST /api/proxypool/subscription/fetch` 与 `POST /api/proxypool/detect-local`（此前 404）。
