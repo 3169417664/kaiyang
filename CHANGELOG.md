@@ -4,6 +4,17 @@
 
 ## [Unreleased]
 
+### 修复（2026-11-20 部署反馈）
+
+- 注册漏掉的 `POST /api/proxypool/subscription/fetch` 与 `POST /api/proxypool/detect-local`（此前 404）。
+- 订阅拉取改走 HTTP/1.1、关闭空闲连接复用，放宽 TLS/响应头/总超时；成功结果缓存 5 分钟，
+  并按 `Content-Length` 拒绝机场限流导致的截断响应。
+- 服务启动立即恢复本机 mihomo；手动「检查全部」与本机条目死亡时也会拉起，
+  不再要求全池都挂。
+- ScopeSentry 未创建/未配置 URL 返回 400 + 可读文案，不再 500。
+- mihomo 启动等待从 20s 提升到 60s；amd64 不支持 x86-64-v3 时优先安装 compatible 构建。
+- 修复 mihomo 远程 URL 安装对 `.gz` 的校验：同时接受压缩包摘要与解压后二进制摘要。
+
 ## [0.2.0] - 2026-11-19
 
 ### 新功能（同步上游 Pojun v0.4.83–v0.4.89）

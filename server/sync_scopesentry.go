@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -44,6 +45,12 @@ func (s *Server) findMCPByName(name string) (*db.MCPServer, error) {
 	return nil, nil
 }
 
+// ssConfigError 表示 ScopeSentry 数据源未就绪（未创建 / 未填 URL）。这是调用方
+// 自己能修好的配置问题，API 应回 400 并带可读文案，而不是笼统的 500。
+type ssConfigError struct{ msg string }
+
+func (e ssConfigError) Error() string { return e.msg }
+
 // scopeSentryClient dials the configured ScopeSentry MCP (http transport). The env
 // map doubles as HTTP headers (X-API-Key). Callers must Close the client.
 func (s *Server) scopeSentryClient(ctx context.Context) (*mcphttp.Client, error) {
@@ -52,12 +59,27 @@ func (s *Server) scopeSentryClient(ctx context.Context) (*mcphttp.Client, error)
 		return nil, err
 	}
 	if m == nil {
-		return nil, fmt.Errorf("数据源 %s 不存在，请先创建", scopeSentryMCPName)
+		return nil, ssConfigError{fmt.Sprintf("数据源 %s 不存在，请先创建", scopeSentryMCPName)}
 	}
 	if m.URL == "" {
-		return nil, fmt.Errorf("数据源 %s 未配置 URL，请先配置", scopeSentryMCPName)
+		return nil, ssConfigError{fmt.Sprintf("数据源 %s 未配置 URL，请先配置", scopeSentryMCPName)}
 	}
 	return mcphttp.New(ctx, m.Name, m.URL, jsonStrMap(m.Env), m.Insecure)
+}
+
+// ssClientOrReply 取数据源客户端；未配置时直接把可读 400 写给调用方。
+func (s *Server) ssClientOrReply(w http.ResponseWriter, ctx context.Context) (*mcphttp.Client, bool) {
+	cl, err := s.scopeSentryClient(ctx)
+	if err != nil {
+		var ce ssConfigError
+		if errors.As(err, &ce) {
+			writeErr(w, http.StatusBadRequest, ce.msg)
+			return nil, false
+		}
+		writeInternalError(w, "sync scopesentry", err)
+		return nil, false
+	}
+	return cl, true
 }
 
 // envHasValue reports whether the env/header map has any non-empty value
@@ -208,9 +230,8 @@ func (s *Server) syncSSProjects(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
-	cl, err := s.scopeSentryClient(ctx)
-	if err != nil {
-		writeInternalError(w, "sync scopesentry", err)
+	cl, ok := s.ssClientOrReply(w, ctx)
+	if !ok {
 		return
 	}
 	defer cl.Close()
@@ -252,9 +273,8 @@ func (s *Server) syncSSTasks(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
-	cl, err := s.scopeSentryClient(ctx)
-	if err != nil {
-		writeInternalError(w, "sync scopesentry", err)
+	cl, ok := s.ssClientOrReply(w, ctx)
+	if !ok {
 		return
 	}
 	defer cl.Close()
@@ -328,9 +348,8 @@ func (s *Server) syncSSRun(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Minute)
 	defer cancel()
-	cl, err := s.scopeSentryClient(ctx)
-	if err != nil {
-		writeInternalError(w, "sync scopesentry", err)
+	cl, ok := s.ssClientOrReply(w, ctx)
+	if !ok {
 		return
 	}
 	defer cl.Close()

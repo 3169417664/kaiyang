@@ -38,7 +38,7 @@ import (
 )
 
 const (
-	defaultStartTimeout = 20 * time.Second
+	defaultStartTimeout = 60 * time.Second
 	downloadLimit       = 200 << 20 // 200MB，防止异常响应写满磁盘
 )
 
@@ -765,6 +765,25 @@ func ParseMirrors(raw string) []string {
 	return out
 }
 
+// supportsX8664V3 读取 /proc/cpuinfo 判断当前 amd64 CPU 是否具备 x86-64-v3
+// 常用的 AVX2/FMA/BMI 指令集。检测失败按不支持处理，优先选 compatible 包。
+func supportsX8664V3() bool {
+	if runtime.GOOS != "linux" || runtime.GOARCH != "amd64" {
+		return true
+	}
+	b, err := os.ReadFile("/proc/cpuinfo")
+	if err != nil {
+		return false
+	}
+	flags := strings.ToLower(string(b))
+	for _, f := range []string{" avx2", " fma", " bmi1", " bmi2", " movbe"} {
+		if !strings.Contains(flags, f) {
+			return false
+		}
+	}
+	return true
+}
+
 func pickAsset(assets []releaseAsset) (out releaseAsset) {
 	osName := runtime.GOOS
 	arch := runtime.GOARCH
@@ -784,10 +803,17 @@ func pickAsset(assets []releaseAsset) (out releaseAsset) {
 		}
 		score := 50
 		switch {
+		case strings.Contains(name, "compatible"):
+			// 官方通用 amd64 包要求 x86-64-v3。QEMU/老 CPU 上直接报
+			// "only be run on AMD64 processors with v3 microarchitecture"，
+			// 因此不支持 v3 时把 compatible 排到最前。
+			if runtime.GOOS == "linux" && runtime.GOARCH == "amd64" && !supportsX8664V3() {
+				score = 120
+			} else {
+				score = 10
+			}
 		case generic.MatchString(name):
 			score = 100
-		case strings.Contains(name, "compatible"):
-			score = 10
 		case strings.Contains(name, "-go1"):
 			score = 30
 		case strings.Contains(name, "-v1-"), strings.Contains(name, "-v2-"), strings.Contains(name, "-v3-"):

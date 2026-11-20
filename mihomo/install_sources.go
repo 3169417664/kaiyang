@@ -185,11 +185,24 @@ func (m *Manager) InstallFromURL(ctx context.Context, rawURL, wantSHA, proxyURL 
 	if err != nil {
 		return InstallResult{}, err
 	}
+	want := strings.ToLower(strings.TrimSpace(wantSHA))
+	rawSum := sha256.Sum256(data)
+	rawSHA := hex.EncodeToString(rawSum[:])
 	payload, err := payloadFromArchive(urlBaseName(rawURL), data)
 	if err != nil {
 		return InstallResult{}, err
 	}
-	res, err := m.saveInstalledBinary(payload, "", rawURL, strings.TrimSpace(wantSHA), false)
+	// GitHub API 的 digest 是压缩包摘要，而部分部署方手工提供的是解压后二进制
+	// 的 sha256；两者都接受，但必须有一个匹配。此前只比解压后的值，按 API
+	// digest 安装 .gz 会必然失败。
+	if want != "" {
+		payloadSum := sha256.Sum256(payload)
+		payloadSHA := hex.EncodeToString(payloadSum[:])
+		if !strings.EqualFold(want, rawSHA) && !strings.EqualFold(want, payloadSHA) {
+			return InstallResult{}, fmt.Errorf("校验失败：期望 %s，压缩包实际 %s，解压后实际 %s", want, rawSHA, payloadSHA)
+		}
+	}
+	res, err := m.saveInstalledBinary(payload, "", rawURL, "", want != "")
 	if err == nil {
 		_ = os.Remove(filepath.Join(m.dir, "mihomo.download"))
 	}

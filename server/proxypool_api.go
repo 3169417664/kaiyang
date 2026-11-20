@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -711,6 +712,27 @@ func (s *Server) proxyPoolCheck(w http.ResponseWriter, r *http.Request) {
 	}
 	s.m.proxyCheckMu.Unlock()
 	s.m.persistProxyBreaks() // 手动验证同样落盘，重启后仍然跳过死代理
+
+	// 本机 mihomo 没有 systemd 守护：手动「检查全部」发现本地出口已死时直接拉起，
+	// 不必等下一轮后台巡检（默认 10 分钟）。
+	if s.m != nil && s.m.mihomo != nil {
+		for i, res := range results {
+			if res.OK {
+				continue
+			}
+			u, err := url.Parse(selected[i].entry.URL)
+			if err != nil || u.Hostname() != "127.0.0.1" {
+				continue
+			}
+			port, _ := strconv.Atoi(u.Port())
+			if st, rerr := s.m.mihomo.RestartFromConfig(context.Background(), port); rerr != nil {
+				log.Printf("[proxypool] 手动检查拉起 mihomo 失败: %v", rerr)
+			} else if st.Running {
+				log.Printf("[proxypool] 手动检查：已拉起 mihomo（端口 %d）", st.Port)
+			}
+			break
+		}
+	}
 
 	writeJSON(w, 200, map[string]any{
 		"target":        target,

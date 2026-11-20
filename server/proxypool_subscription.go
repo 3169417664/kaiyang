@@ -28,6 +28,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/3169417664/kaiyang/traffic"
@@ -452,6 +453,38 @@ var subscriptionUserAgents = []string{
 // 按 subscriptionUserAgents 轮换 UA：订阅站常按 UA 返回 403 或不同格式的配置，
 // 不能假设浏览器 UA 能拿到 Clash 节点。只有 200 才算成功；403/401 继续换 UA，
 // 其他非 200 也换一次（有些站按 UA 返回不同状态码）。
+// 机场普遍限制订阅拉取频率（分钟级），页面反复「拉取」/刷新会触发限流，表现为
+// 首包极慢甚至返回被截断的 YAML。成功结果做短期缓存：命中即返回，既省配额，
+// 也保证同一个地址连续操作拿到的是同一份完整配置。缓存只存成功结果。
+const subCacheTTL = 5 * time.Minute
+
+type subCacheEntry struct {
+	body  []byte
+	ctype string
+	at    time.Time
+}
+
+var (
+	subCacheMu sync.Mutex
+	subCache   = map[string]subCacheEntry{}
+)
+
+func subCacheGet(key string) ([]byte, string, bool) {
+	subCacheMu.Lock()
+	defer subCacheMu.Unlock()
+	e, ok := subCache[key]
+	if !ok || time.Since(e.at) > subCacheTTL {
+		return nil, "", false
+	}
+	return e.body, e.ctype, true
+}
+
+func subCachePut(key string, body []byte, ctype string) {
+	subCacheMu.Lock()
+	defer subCacheMu.Unlock()
+	subCache[key] = subCacheEntry{body: body, ctype: ctype, at: time.Now()}
+}
+
 func fetchSubscriptionBody(ctx context.Context, rawURL string) ([]byte, string, error) {
 	u, err := url.Parse(strings.TrimSpace(rawURL))
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
@@ -460,18 +493,27 @@ func fetchSubscriptionBody(ctx context.Context, rawURL string) ([]byte, string, 
 	if privateHost(u.Hostname()) {
 		return nil, "", fmt.Errorf("订阅地址解析到回环/私网地址，已拒绝（防止 SSRF）")
 	}
+	if b, ct, ok := subCacheGet(u.String()); ok {
+		return b, ct, nil
+	}
 	transport := &http.Transport{
-		Proxy:                 http.ProxyFromEnvironment,
-		DialContext:           ssrfSafeDialContext,
-		ForceAttemptHTTP2:     true,
+		Proxy:       http.ProxyFromEnvironment,
+		DialContext: ssrfSafeDialContext,
+		// 不走 HTTP/2：部分机场订阅站在 h2 上会「连上但永不回头」，
+		// 实测同一地址 curl(HTTP/1.1) 7s 拿全 500KB，Go 默认 h2 会卡到超时。
+		ForceAttemptHTTP2: false,
+		// 订阅站常见空闲连接被中途掐断，复用旧连接会一直等到超时。
+		DisableKeepAlives:     true,
 		MaxIdleConns:          4,
 		IdleConnTimeout:       30 * time.Second,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ResponseHeaderTimeout: 15 * time.Second,
+		TLSHandshakeTimeout:   15 * time.Second,
+		ResponseHeaderTimeout: 45 * time.Second,
 	}
 	client := &http.Client{
 		Transport: transport,
-		Timeout:   20 * time.Second,
+		// 国内出口拉海外机场订阅常见「首包慢 + 边下边卡」，20s 全时限会把
+		// 500KB 级别的大订阅直接判失败（实测该订阅 500KB+/次）。
+		Timeout: 120 * time.Second,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= 5 {
 				return fmt.Errorf("重定向次数过多")
@@ -508,11 +550,19 @@ func fetchSubscriptionBody(ctx context.Context, rawURL string) ([]byte, string, 
 		}
 		body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 		contentType := resp.Header.Get("Content-Type")
+		declared := resp.ContentLength
 		_ = resp.Body.Close()
 		if err != nil {
 			lastErr = fmt.Errorf("读取订阅失败（UA=%s）: %w", uaLabel(ua), err)
 			continue
 		}
+		// 机场限流时常见「200 + 提前断流」：Content-Length 声明了完整长度，
+		// 实际读到的字节数不足，直接判失败重试，不要把残缺 YAML 当成功。
+		if declared > 0 && int64(len(body)) != declared {
+			lastErr = fmt.Errorf("订阅内容不完整（UA=%s）：声明 %d 字节，实际读取 %d 字节", uaLabel(ua), declared, len(body))
+			continue
+		}
+		subCachePut(u.String(), body, contentType)
 		return body, contentType, nil
 	}
 	if lastErr == nil {
@@ -541,7 +591,7 @@ func (s *Server) proxyPoolSubscriptionFetch(w http.ResponseWriter, r *http.Reque
 		writeErr(w, 400, "请求格式错误")
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 150*time.Second)
 	defer cancel()
 	body, contentType, err := fetchSubscriptionBody(ctx, req.URL)
 	if err != nil {
