@@ -102,6 +102,9 @@ func permissionForRequest(method, fullPath string) (string, bool) {
 		return crudPerm(method, "c2"), true
 	case strings.HasPrefix(p, "/settings"):
 		return crudPerm(method, "config"), true
+	case strings.HasPrefix(p, "/cleanup"):
+		// 删除后清理队列是运维控制面：读列表可给 config:read，重试/消费仅 admin。
+		return crudPerm(method, "config"), true
 	case strings.HasPrefix(p, "/llm"):
 		return crudPerm(method, "llm"), true
 	case strings.HasPrefix(p, "/agents"), strings.HasPrefix(p, "/triggers"),
@@ -133,6 +136,12 @@ func permissionForRequest(method, fullPath string) (string, bool) {
 		strings.HasPrefix(p, "/sessions"), strings.HasPrefix(p, "/side-questions"),
 		strings.HasPrefix(p, "/commands"), strings.HasPrefix(p, "/llm-records"):
 		return crudPerm(method, "task"), true
+	case p == "/traffic/retention":
+		// 留存执行等价于删除：POST 即使 dry_run 也属于删除控制面，不能给 viewer。
+		if method == http.MethodGet || method == http.MethodHead {
+			return "traffic:read", true
+		}
+		return "traffic:delete", true
 	case strings.HasPrefix(p, "/traffic"):
 		// 读与删必须分开：viewer 只有 traffic:read，不能清空证据。
 		if method == http.MethodDelete {
