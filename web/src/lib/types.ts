@@ -1335,6 +1335,12 @@ export interface MCPServer {
   enabled: boolean;
   insecure?: boolean; // http: skip TLS cert verification (self-signed servers)
   tools?: string[]; // mcp_tools_cache (names only, for the count)
+  // Health check (v0.4.107): last_ok null/undefined = never checked.
+  last_check_at?: string;
+  last_ok?: boolean | null;
+  last_error?: string;
+  last_latency_ms?: number;
+  tool_count?: number;
 }
 
 export interface MCPTool {
