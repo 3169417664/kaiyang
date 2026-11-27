@@ -105,6 +105,11 @@ import type {
   AuthCheckResult,
   TaskAuthConfigInput,
   TaskArtifact,
+  TaskCredential,
+  TaskCredentialCheck,
+  TaskCredentialInput,
+  ProgramProfile,
+  TaskProgramProfileResponse,
   TaskCostEstimate,
   Severity,
   SkillCall,
@@ -528,6 +533,10 @@ export const api = {
       request_id: string;
     }>(`/tasks/${taskId}/intents/${intentId}/messages`, { message, request_id: requestId }),
   taskLLMResolution: (id: string) => get<TaskLLMResolutions>(`/tasks/${id}/llm/resolution`),
+  taskProgramProfile: (id: string) =>
+    get<TaskProgramProfileResponse>(`/tasks/${encodeURIComponent(id)}/program-profile`),
+  saveTaskProgramProfile: (id: string, profile: ProgramProfile) =>
+    put<TaskProgramProfileResponse>(`/tasks/${encodeURIComponent(id)}/program-profile`, profile),
   // 重跑一条没跑成功的意图(blocked/exhausted/stopped)：置回 open，worker 会重新认领、从头再跑。
   rerunIntent: (taskId: string, intentId: string) =>
     post<{ id: string; reopened: number }>(`/tasks/${taskId}/intents/${intentId}/rerun`),
@@ -874,6 +883,19 @@ export const api = {
   taskCost: (task: string) => get<TaskCostEstimate>(`/tokens/cost${tq(task)}`),
   // 登录凭据自检：用任务配置的真实登录请求验证凭据是否可用。
   taskAuthCheck: (taskId: string) => post<AuthCheckResult>(`/tasks/${taskId}/auth-check`, {}),
+  // 任务级多角色凭据池（#24）：列表/创建/编辑/删除/逐条自检。
+  taskCredentials: (taskId: string) =>
+    get<{ credentials: TaskCredential[] | null }>(`/tasks/${taskId}/credentials`).then((r) => ({
+      credentials: arr(r.credentials),
+    })),
+  createTaskCredential: (taskId: string, input: TaskCredentialInput) =>
+    post<TaskCredential>(`/tasks/${taskId}/credentials`, input),
+  updateTaskCredential: (taskId: string, credentialId: number, input: TaskCredentialInput) =>
+    put<TaskCredential>(`/tasks/${taskId}/credentials/${credentialId}`, input),
+  deleteTaskCredential: (taskId: string, credentialId: number) =>
+    del<{ ok: boolean }>(`/tasks/${taskId}/credentials/${credentialId}`),
+  checkTaskCredential: (taskId: string, credentialId: number) =>
+    post<TaskCredentialCheck>(`/tasks/${taskId}/credentials/${credentialId}/check`, {}),
   // 任务证据附件：列表 / 下载地址（图片直链同源带 cookie，可直接当 img src）。
   taskArtifacts: (taskId: string) =>
     get<{ artifacts: TaskArtifact[] }>(`/tasks/${taskId}/artifacts`).then((r) => arr(r.artifacts)),

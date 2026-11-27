@@ -810,6 +810,15 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/tasks/{id}/review/{intentID}/reject", s.reviewReject)
 	mux.HandleFunc("PATCH /api/tasks/{id}", s.updateTaskMetadata)
 	mux.HandleFunc("PATCH /api/tasks/{id}/category", s.updateTaskCategory)
+	// SRC/众测 program profile（v0.4.112）：任务级元数据，不是任务授权范围
+	mux.HandleFunc("GET /api/tasks/{id}/program-profile", s.getTaskProgramProfile)
+	mux.HandleFunc("PUT /api/tasks/{id}/program-profile", s.putTaskProgramProfile)
+	// 任务级多角色凭据池（v0.4.120 #24）：秘密只存 DB，接口不回显
+	mux.HandleFunc("GET /api/tasks/{id}/credentials", s.pgTaskCredentials)
+	mux.HandleFunc("POST /api/tasks/{id}/credentials", s.pgCreateTaskCredential)
+	mux.HandleFunc("PUT /api/tasks/{id}/credentials/{cid}", s.pgUpdateTaskCredential)
+	mux.HandleFunc("DELETE /api/tasks/{id}/credentials/{cid}", s.pgDeleteTaskCredential)
+	mux.HandleFunc("POST /api/tasks/{id}/credentials/{cid}/check", s.pgCheckTaskCredential)
 	// 任务级资产拦截/允许规则
 	mux.HandleFunc("GET /api/tasks/{id}/intercept-rules", s.taskInterceptListRules)
 	mux.HandleFunc("POST /api/tasks/{id}/intercept-rules", s.taskInterceptCreateRule)

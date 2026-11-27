@@ -922,6 +922,70 @@ export interface AuthCheckResult {
   checked_at: string;
 }
 
+// ---- SRC/众测 program profile（v0.4.112，任务级） ----
+export interface ProgramProfile {
+  platform?: string; // hackerone/bugcrowd/intigriti/yeswehack/other
+  handle?: string;
+  scope?: string[];
+  excluded?: string[];
+  scanners_allowed?: string[];
+  allow_race?: boolean;
+  dry_run?: boolean;
+  rps?: number; // 0/缺省 = 不限速
+  allowed_hosts?: string[]; // 原生 HTTP allowlist；空=不限
+  denied_hosts?: string[]; // deny 优先
+  window_start?: string; // HH:MM
+  window_end?: string;
+  timezone?: string; // IANA
+  max_concurrent?: number; // 0=不限
+}
+
+export interface TaskProgramProfileResponse {
+  task_id: string;
+  profile: ProgramProfile | null;
+}
+
+// 任务级多角色凭据（#24）的只读视图：秘密字段永不返回，只回 has_* 标记。
+export interface TaskCredential {
+  id: number;
+  role: string;
+  enabled: boolean;
+  login_url: string;
+  method: string;
+  auth_mode: string;
+  content_type: string;
+  username_field?: string;
+  password_field?: string;
+  username?: string;
+  has_password: boolean;
+  has_token: boolean;
+  has_totp: boolean;
+  extra_fields?: Record<string, string>;
+  headers?: Record<string, string>;
+  success_status?: number;
+  success_contains?: string;
+  status: "pending" | "ok" | "failed" | "locked" | string;
+  last_checked_at?: string;
+  last_error?: string;
+  failure_count: number;
+  locked_until?: string;
+}
+
+export interface TaskCredentialCheck {
+  result: AuthCheckResult;
+  credential: TaskCredential;
+}
+
+// 创建/编辑多角色凭据的输入；password/token/totp_secret 只写不读。
+export interface TaskCredentialInput {
+  role: string;
+  config: TaskAuthConfigView & {
+    password?: string;
+    token?: string;
+    totp_secret?: string;
+  };
+}
+
 // 单任务成本估算（GET /api/tokens/cost?task=）。金额按内置参考价换算，
 // 仅用于相对对比；unpriced_models 非空说明有模型不在定价表，成本被低估。
 export interface TaskCostEstimate {

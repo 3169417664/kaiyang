@@ -39,7 +39,11 @@ type MainAgent struct {
 	nonStreamingFn       func() bool                            // resolver: use non-streaming (Complete) path? (nil = streaming)
 	noaEnabledFn         func() bool                            // resolver: use experimental noa compaction? (nil = off)
 	maxTokensFn          func() int                             // resolver: per-reply output cap (nil/0 = send no cap)
+	programProfile       *db.ProgramProfile                     // SRC/众测 profile（nil = 不渲染）
 }
+
+// SetProgramProfile 注入任务级 SRC/众测 profile（v0.4.112）；nil=不渲染。
+func (m *MainAgent) SetProgramProfile(profile *db.ProgramProfile) { m.programProfile = profile }
 
 // SetNoaEnabled wires a resolver deciding whether runs use the experimental noa
 // context-compression mechanism. nil/unset = off (built-in compaction). Read per
@@ -140,6 +144,7 @@ func mainAgentSystem(goal, dataDir, workDir string) string {
 func (m *MainAgent) Chat(ctx context.Context, taskID int64, mainSeg int, as *db.AssetStore, ts *db.ExplorationStore, goal, message string, emit func(db.Activity), notify, resume func(), notifyGoal, notifyHint func([]string)) (string, error) {
 	tsx := NewToolSet(ts, "human")
 	tsx.SetEgressProxy(m.proxyAddr, m.proxyCACert) // 原生 http_request/session_login 与 Bash 同源出口
+	tsx.SetProgramProfile(m.programProfile)
 	tsx.SetFindingRecorder(m.findingRecorder)
 	tsx.SetScopeFlags(m.scopeGuard, m.scopeInheritWrites, m.crossTaskNotifyDedup)
 	if as != nil {
@@ -164,7 +169,7 @@ func (m *MainAgent) Chat(ctx context.Context, taskID int64, mainSeg int, as *db.
 	// 共享目录注入：主 Agent 同样要能用作业/脚本/PoC 脚手架工具（见 planner 同款注释）。
 	tsx.SetRunDir(mainDir)
 	ctx = intercept.WithReviewWorkingDirectory(ctx, mainDir)
-	system, boundary := deferredSystem(mainAgentSystem(goal, m.workDir, mainDir), def)
+	system, boundary := deferredSystem(mainAgentSystem(goal, m.workDir, mainDir)+ProgramProfileBlock(m.programProfile), def)
 	opts := agentcore.Options{
 		Provider:        m.prov,
 		SystemPrompt:    system,

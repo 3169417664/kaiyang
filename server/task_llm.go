@@ -707,8 +707,19 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 	} else {
 		scopeGuard, notifyDedup = true, true
 	}
+	// SRC/众测 program profile（v0.4.112）：nil=未配置，提示/限速/身份头全部
+	// 保持基线。读取失败只日志，不影响 Agent 装配。
+	var programProfile *db.ProgramProfile
+	if s.m.PG() != nil {
+		if p, found, err := s.m.PG().GetTaskProgramProfile(t.ID); err != nil {
+			log.Printf("[program] task %s 读取 profile 失败: %v", t.ID, err)
+		} else if found {
+			programProfile = p
+		}
+	}
 	wk := agent.NewWorker(workerRuntime, "task-router", s.m.dir, tx, window, s.agentMaxTurns("worker"))
 	wk.SetScopeFlags(scopeGuard, scopeInherit, notifyDedup)
+	wk.SetProgramProfile(programProfile)
 	wk.SetFindingRecorder(s.evidenceStore())
 	wk.SetArtifactRecorder(s) // v0.5.0 证据附件：save_evidence 落盘登记
 	wk.SetCompactionWindowResolver(workerRuntime.CompactionWindow)
@@ -719,16 +730,27 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 	wk.SetProxy(s.m.ProxyAddr(), s.m.ProxyCACert())
 	wk.SetWebSearch(s.webSearchFor("worker"))
 	wk.SetConstraintInject(s.constraintInjectWorker) // 操作约束注入 worker(可配置,默认开)
-	// 任务级登录凭据（v0.4.8）：装配时读一次并注入 worker system prompt。
-	// 认证配置当前只在创建任务时录入；若以后加编辑接口，需要在保存后 invalidate
-	// 本任务的 agent bundle 让下一轮重新装配。
+	// 任务级登录凭据（v0.4.8 / #24）：装配时读一次，下一轮重新装配。
+	// 多角色池存在时只注入 ID/角色/健康状态摘要（秘密不进 prompt）；
+	// 旧单账号配置仍按原 PromptBlock 注入，保持兼容。
+	authBlock := ""
 	if s.m.PG() != nil {
 		if id64, err := strconv.ParseInt(t.ID, 10, 64); err == nil {
-			if pgTask, err2 := s.m.PG().GetTask(id64); err2 == nil && pgTask != nil && pgTask.AuthConfig != nil && pgTask.AuthConfig.Enabled {
-				wk.SetTaskAuthBlock(pgTask.AuthConfig.PromptBlock())
+			creds, cerr := s.m.PG().ListTaskCredentials(context.Background(), id64)
+			if cerr != nil {
+				log.Printf("[credentials] task %s 读取多角色凭据失败: %v", t.ID, cerr)
+			} else if len(creds) > 0 {
+				authBlock = taskCredentialsPromptBlock(creds)
+			}
+			if authBlock == "" {
+				if pgTask, err2 := s.m.PG().GetTask(id64); err2 == nil && pgTask != nil && pgTask.AuthConfig != nil && pgTask.AuthConfig.Enabled {
+					authBlock = pgTask.AuthConfig.PromptBlock()
+				}
 			}
 		}
 	}
+	wk.SetTaskAuthBlock(authBlock)
+	wk.SetTaskCredentialResolver(s)
 	pl := agent.NewPlanner(plannerRuntime, "task-router", s.m.dir, tx, plannerRuntime.CompactionWindow(), s.agentMaxTurns("planner"))
 	// 任务级提示词快照（模板库/建任务时解析）：最高优先级，只替换正文，硬尾仍由代码追加。
 	if s.m.PG() != nil {
@@ -748,6 +770,8 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 		}
 	}
 	pl.SetScopeFlags(scopeGuard, scopeInherit, notifyDedup)
+	pl.SetProgramProfile(programProfile)
+	pl.SetTaskAuthBlock(authBlock)              // #24：只含凭据 ID/角色/健康状态，不含秘密
 	pl.SetIntentQueueLimit(s.intentQueueBudget) // 派发节流（v0.4.68）：本轮新增上限
 	pl.SetFindingRecorder(s.evidenceStore())
 	pl.SetCompactionWindowResolver(plannerRuntime.CompactionWindow)
@@ -786,6 +810,7 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 	pl.SetCompactor(compactor)
 	main := agent.NewMainAgent(mainRuntime, "task-router", s.m.dir, tx, mainRuntime.CompactionWindow(), s.agentMaxTurns("mainagent"))
 	main.SetScopeFlags(scopeGuard, scopeInherit, notifyDedup)
+	main.SetProgramProfile(programProfile)
 	main.SetFindingRecorder(s.evidenceStore())
 	main.SetCompactionWindowResolver(mainRuntime.CompactionWindow)
 	main.SetNonStreaming(mainRuntime.nonStreaming)

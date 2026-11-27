@@ -79,6 +79,11 @@ func permissionForRequest(method, fullPath string) (string, bool) {
 	if strings.HasPrefix(p, "/tasks/") && strings.Contains(p, "/llm") {
 		return crudPerm(method, "llm"), true
 	}
+	// 任务级多角色凭据池 / SRC 众测 profile：跟随 task 读写权限。
+	// 凭据秘密只在 DB 与 agent 解析层使用，接口只回 DTO（无 secret 字段）。
+	if strings.HasPrefix(p, "/tasks/") && (strings.Contains(p, "/credentials") || strings.Contains(p, "/program-profile")) {
+		return crudPerm(method, "task"), true
+	}
 	// 任务级拦截规则是安全控制面的一部分：读可下放，写仅 admin。
 	if strings.Contains(p, "/intercept-rules") {
 		if method == http.MethodGet || method == http.MethodHead {

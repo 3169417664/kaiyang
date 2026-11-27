@@ -48,6 +48,8 @@ type Planner struct {
 	compactor            *Compactor                             // cold-node compaction (§7); nil = disabled
 	taskPromptOverride   string                                 // 任务级提示词快照（最高优先级）
 	reviewEnabledFn      func() bool                            // 任务是否开启意图审核
+	programProfile       *db.ProgramProfile                     // SRC/众测 profile（nil = 不渲染）
+	taskAuthBlock        string                                 // 多角色凭据摘要（#24，无明文）
 
 	// todos keeps ONE plan-scratchpad per task (keyed by exploration id) so the
 	// planner's multi-step plan survives across wake-ups — each Plan() is a fresh
@@ -74,6 +76,12 @@ func (p *Planner) SetTaskPromptOverride(body string) { p.taskPromptOverride = bo
 
 // SetReviewEnabled 注入任务级审核开关（每轮读取）。
 func (p *Planner) SetReviewEnabled(fn func() bool) { p.reviewEnabledFn = fn }
+
+// SetProgramProfile 注入任务级 SRC/众测 profile（v0.4.112）；nil=不渲染、零行为变化。
+func (p *Planner) SetProgramProfile(profile *db.ProgramProfile) { p.programProfile = profile }
+
+// SetTaskAuthBlock 注入多角色凭据摘要（#24）；只含 ID/角色/状态/登录地址，不含秘密。
+func (p *Planner) SetTaskAuthBlock(block string) { p.taskAuthBlock = block }
 
 // SetCompactor wires the cold-node compactor (cold-digest §7). Called each
 // planner wake-up to advance the round counter, maintain cold stamps, and
@@ -469,6 +477,7 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	p.compactor.OnPlannerRound(ctx, ts)
 	tsx := NewToolSet(ts, "planner")
 	tsx.SetEgressProxy(p.proxyAddr, p.proxyCACert) // 原生 http_request/session_login 与 Bash 同源出口
+	tsx.SetProgramProfile(p.programProfile)
 	tsx.SetReviewEnabled(p.reviewEnabledFn)
 	tsx.SetFindingRecorder(p.findingRecorder)
 	tsx.SetScopeFlags(p.scopeGuard, p.scopeInheritWrites, p.crossTaskNotifyDedup)
@@ -524,6 +533,10 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 			"提交新意图必须使用 add_review_intent（禁止 add_intent，直投会被硬拒绝）。" +
 			"意图会先进入 proposed 待审池，人工批准后才转 open 并被执行。" +
 			"如需修订被驳回的意图，用 list_intents(state=rejected) 查看后用 update_intent 修订并自动重送审。"
+	}
+	sysBody += ProgramProfileBlock(p.programProfile)
+	if p.taskAuthBlock != "" {
+		sysBody += p.taskAuthBlock // 多角色凭据只暴露 ID/角色/健康状态，不含明文
 	}
 	if p.wantConstraints() {
 		sysBody += constraintBlock(ts) // 操作约束(若有)注入系统提示,框定探索边界
