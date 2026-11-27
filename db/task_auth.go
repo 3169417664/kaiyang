@@ -12,9 +12,9 @@ import (
 // authentication 模型）：worker 拿到它先登录、再在会话内测试；创建后可
 // 触发一次登录自检，凭据不可用时在开扫前就知道，而不是让 worker 盲探。
 //
-// 安全边界：Password / TOTPSecret 标记 json:"-"——任何 API 响应都不会回传
-// 秘密；DB 存取走 DBValue（显式带秘密）。HasPassword/HasTOTP 是只读派生标记，
-// 让前端知道"配过密码"而不暴露内容。
+// 安全边界：Password / Token / TOTPSecret 标记 json:"-"——任何 API 响应都不会
+// 回传秘密；DB 存取走 DBValue（显式带秘密）。HasPassword/HasToken/HasTOTP 是
+// 只读派生标记，让前端知道"配过密码/token"而不暴露内容。
 type TaskAuthConfig struct {
 	Enabled         bool              `json:"enabled"`
 	LoginURL        string            `json:"login_url"`
@@ -25,6 +25,9 @@ type TaskAuthConfig struct {
 	Username        string            `json:"username,omitempty"`
 	Password        string            `json:"-"`
 	HasPassword     bool              `json:"has_password,omitempty"`
+	AuthMode        string            `json:"auth_mode,omitempty"` // form|json|basic|bearer|cookie；空=form
+	Token           string            `json:"-"`
+	HasToken        bool              `json:"has_token,omitempty"`
 	TOTPSecret      string            `json:"-"`
 	HasTOTP         bool              `json:"has_totp,omitempty"`
 	ExtraFields     map[string]string `json:"extra_fields,omitempty"`
@@ -34,37 +37,48 @@ type TaskAuthConfig struct {
 }
 
 // authWire 是 DB 存储形态：TaskAuthConfig 的 json:"-" 面向 API，DB 必须显式
-// 带上 password / totp_secret 两个秘密字段。
+// 带上 password / token / totp_secret 三个秘密字段。
 type authWire struct {
 	TaskAuthConfig
 	Password   string `json:"password,omitempty"`
 	TOTPSecret string `json:"totp_secret,omitempty"`
+	Token      string `json:"token,omitempty"`
 }
 
-// DBValue 序列化含秘密字段的 JSON（写 tasks.auth_config）。
+// DBValue 序列化含秘密字段的 JSON（写 tasks.auth_config / task_credentials.config）。
 func (a *TaskAuthConfig) DBValue() ([]byte, error) {
 	if a == nil {
 		return nil, nil
 	}
-	return json.Marshal(authWire{TaskAuthConfig: *a, Password: a.Password, TOTPSecret: a.TOTPSecret})
+	return json.Marshal(authWire{TaskAuthConfig: *a, Password: a.Password, TOTPSecret: a.TOTPSecret, Token: a.Token})
 }
 
 // ParseTaskAuth 解析 DB 里的 auth_config；空/nil 返回 nil。解析成功时派生
-// HasPassword/HasTOTP 供前端展示。
+// HasPassword/HasToken/HasTOTP 供前端展示。
 func ParseTaskAuth(raw []byte) *TaskAuthConfig {
 	raw = []byte(strings.TrimSpace(string(raw)))
 	if len(raw) == 0 || string(raw) == "null" || string(raw) == "{}" {
 		return nil
 	}
-	var w authWire
+	// Use a fresh alias (not TaskAuthConfig, which has a custom UnmarshalJSON) so
+	// DB storage can carry the secret fields explicitly without double-decoding.
+	type authPlain TaskAuthConfig
+	var w struct {
+		authPlain
+		Password   string `json:"password,omitempty"`
+		TOTPSecret string `json:"totp_secret,omitempty"`
+		Token      string `json:"token,omitempty"`
+	}
 	if err := json.Unmarshal(raw, &w); err != nil {
 		return nil
 	}
-	a := w.TaskAuthConfig
+	a := TaskAuthConfig(w.authPlain)
 	a.Password = w.Password
 	a.TOTPSecret = w.TOTPSecret
+	a.Token = w.Token
 	a.HasPassword = a.Password != ""
 	a.HasTOTP = a.TOTPSecret != ""
+	a.HasToken = a.Token != ""
 	return &a
 }
 
@@ -99,14 +113,32 @@ func (a *TaskAuthConfig) Normalize() error {
 	if strings.TrimSpace(a.PasswordField) == "" {
 		a.PasswordField = "password"
 	}
-	if strings.TrimSpace(a.Username) == "" || a.Password == "" {
-		return fmt.Errorf("启用登录配置时用户名与密码都必须填写")
+	a.AuthMode = strings.ToLower(strings.TrimSpace(a.AuthMode))
+	if a.AuthMode == "" {
+		a.AuthMode = "form"
+	}
+	switch a.AuthMode {
+	case "form", "json":
+		if strings.TrimSpace(a.Username) == "" || a.Password == "" {
+			return fmt.Errorf("form/json 模式需要用户名与密码")
+		}
+	case "basic":
+		if (strings.TrimSpace(a.Username) == "" || a.Password == "") && strings.TrimSpace(a.Token) == "" {
+			return fmt.Errorf("basic 模式需要用户名+密码或 token")
+		}
+	case "bearer", "cookie":
+		if strings.TrimSpace(a.Token) == "" {
+			return fmt.Errorf("%s 模式需要 token", a.AuthMode)
+		}
+	default:
+		return fmt.Errorf("auth_mode 只支持 form / json / basic / bearer / cookie")
 	}
 	if a.SuccessStatus != 0 && (a.SuccessStatus < 100 || a.SuccessStatus > 599) {
 		return fmt.Errorf("成功状态码需在 100–599 之间（0 表示不校验）")
 	}
 	a.HasPassword = a.Password != ""
 	a.HasTOTP = strings.TrimSpace(a.TOTPSecret) != ""
+	a.HasToken = a.Token != ""
 	return nil
 }
 
@@ -121,8 +153,14 @@ func (a *TaskAuthConfig) PromptBlock() string {
 	b.WriteString("目标站点已配置登录凭据，测试前先用它登录并在会话内保持认证状态；不要在报告里写出密码或 TOTP 密钥。\n")
 	b.WriteString("登录地址：" + a.LoginURL + "\n")
 	b.WriteString("请求方法：" + a.Method + "，请求体格式：" + a.ContentType + "\n")
+	if a.AuthMode != "" && a.AuthMode != "form" && a.AuthMode != "json" {
+		b.WriteString("认证方式：" + a.AuthMode + "\n")
+	}
 	b.WriteString("用户名字段：" + a.UsernameField + " = " + a.Username + "\n")
 	b.WriteString("密码字段：" + a.PasswordField + " = " + a.Password + "\n")
+	if a.HasToken {
+		b.WriteString("Token/会话值：" + a.Token + "\n")
+	}
 	if a.HasTOTP {
 		b.WriteString("TOTP 密钥（Base32）：" + a.TOTPSecret + "（按当前时间生成 6 位动态码填入动态码字段）\n")
 	}
@@ -164,4 +202,31 @@ func (a *TaskAuthConfig) PromptBlock() string {
 	}
 	b.WriteString("登录成功后从响应头/响应体提取会话凭证（Set-Cookie/token），后续请求携带它。登录失败时如实记录失败原因，不要猜测其他凭据。")
 	return b.String()
+}
+
+// UnmarshalJSON accepts the write-only secret fields (password/token/totp_secret)
+// from API requests while keeping them out of API responses (the struct tags are
+// json:"-"). DBValue/ParseTaskAuth remain the explicit storage path.
+func (a *TaskAuthConfig) UnmarshalJSON(data []byte) error {
+	if a == nil {
+		return nil
+	}
+	type plain TaskAuthConfig
+	var w struct {
+		plain
+		Password   string `json:"password"`
+		Token      string `json:"token"`
+		TOTPSecret string `json:"totp_secret"`
+	}
+	if err := json.Unmarshal(data, &w); err != nil {
+		return err
+	}
+	*a = TaskAuthConfig(w.plain)
+	a.Password = w.Password
+	a.Token = w.Token
+	a.TOTPSecret = w.TOTPSecret
+	a.HasPassword = a.Password != ""
+	a.HasToken = a.Token != ""
+	a.HasTOTP = a.TOTPSecret != ""
+	return nil
 }

@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/3169417664/kaiyang/db"
@@ -88,6 +89,19 @@ type ToolSet struct {
 	// 与 Bash 的 HTTP_PROXY 同源（记录 MITM 或全局代理），保证流量留痕一致。
 	egressProxy string
 	egressCA    string
+	// programProfile 是任务级 SRC/众测 profile（v0.4.112）：仅用于原生 HTTP 的
+	// X-Bug-Bounty 头、RPS 限速、dry-run 与 host allow/deny/时间窗/并发硬边界。
+	programProfile       *db.ProgramProfile
+	programHandle        string
+	dryRun               bool
+	programAllowedHosts  []string
+	programDeniedHosts   []string
+	programWindowStart   string
+	programWindowEnd     string
+	programLoc           *time.Location
+	programMaxConcurrent int
+	// taskCredResolver 解析任务级多角色凭据池（#24）；nil=未启用。
+	taskCredResolver TaskCredentialResolver
 	// lastScopeWarnings 是最近一次 record_fact 中 source/foreign 资产的提示，
 	// 只回传、不阻断写入。
 	lastScopeWarnings []string
@@ -238,7 +252,45 @@ func NewToolSet(ts *db.ExplorationStore, worker string) *ToolSet {
 
 // SetTaskID sets the PG task id on this ToolSet so that report_finding can
 // dual-write to the standalone findings table (which survives task deletion).
-func (t *ToolSet) SetTaskID(id int64) { t.taskID = id }
+func (t *ToolSet) SetTaskID(id int64) {
+	t.taskID = id
+	if t.programProfile != nil {
+		ConfigureProgramRPS(id, t.programProfile.RPS)
+	}
+}
+
+// SetProgramProfile 注入任务级 SRC/众测 profile（v0.4.112）。nil/空 profile
+// 会清掉限速与身份头，行为回到基线。必须在 SetTaskID 之后或同时调用；若先于
+// SetTaskID，SetTaskID 会补上 RPS 配置。
+func (t *ToolSet) SetProgramProfile(p *db.ProgramProfile) {
+	t.programProfile = p
+	if p == nil || p.IsZero() {
+		t.programHandle, t.dryRun = "", false
+		t.programAllowedHosts, t.programDeniedHosts = nil, nil
+		t.programWindowStart, t.programWindowEnd, t.programLoc = "", "", nil
+		t.programMaxConcurrent = 0
+		if t.taskID > 0 {
+			ConfigureProgramRPS(t.taskID, 0)
+		}
+		return
+	}
+	t.programHandle, t.dryRun = strings.TrimSpace(p.Handle), p.DryRun
+	t.programAllowedHosts, t.programDeniedHosts = p.AllowedHosts, p.DeniedHosts
+	t.programWindowStart, t.programWindowEnd = p.WindowStart, p.WindowEnd
+	t.programMaxConcurrent = p.MaxConcurrent
+	t.programLoc = time.Local
+	if strings.TrimSpace(p.Timezone) != "" {
+		if loc, err := time.LoadLocation(strings.TrimSpace(p.Timezone)); err == nil {
+			t.programLoc = loc
+		}
+	}
+	if t.taskID > 0 {
+		ConfigureProgramRPS(t.taskID, p.RPS)
+	}
+}
+
+// SetTaskCredentialResolver 注入任务级多角色凭据解析器（#24）。
+func (t *ToolSet) SetTaskCredentialResolver(r TaskCredentialResolver) { t.taskCredResolver = r }
 
 // SetReviewEnabled 注入当前任务是否开启意图审核（每轮读取，设置改动即时生效）。
 func (t *ToolSet) SetReviewEnabled(fn func() bool) { t.reviewEnabledFn = fn }

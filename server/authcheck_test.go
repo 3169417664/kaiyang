@@ -53,7 +53,7 @@ func TestRunAuthCheck(t *testing.T) {
 		ContentType: "json", UsernameField: "user", PasswordField: "pass",
 		Username: "alice", Password: "s3cret", SuccessContains: "token",
 	}
-	res := runAuthCheck(base)
+	res := runAuthCheck(base, "", "")
 	if !res.OK || res.StatusCode != 200 {
 		t.Fatalf("json login should pass: %+v", res)
 	}
@@ -64,7 +64,7 @@ func TestRunAuthCheck(t *testing.T) {
 	// 失败凭据：401 + 缺 token → 不通过，且详情不含密码。
 	bad := *base
 	bad.Password = "wrong-pass"
-	res = runAuthCheck(&bad)
+	res = runAuthCheck(&bad, "", "")
 	if res.OK {
 		t.Fatalf("bad credentials must fail: %+v", res)
 	}
@@ -75,14 +75,14 @@ func TestRunAuthCheck(t *testing.T) {
 	// form 形态
 	form := *base
 	form.ContentType = "form"
-	res = runAuthCheck(&form)
+	res = runAuthCheck(&form, "", "")
 	if !res.OK || gotUser != "alice" || gotPass != "s3cret" {
 		t.Fatalf("form login should pass: %+v user=%s pass=%s", res, gotUser, gotPass)
 	}
 
 	// 未启用：明确说明而不是误判成功。
 	off := db.TaskAuthConfig{}
-	if res := runAuthCheck(&off); res.OK {
+	if res := runAuthCheck(&off, "", ""); res.OK {
 		t.Fatal("disabled config must not report ok")
 	}
 }

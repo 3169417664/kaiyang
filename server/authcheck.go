@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"crypto/hmac"
 	"crypto/sha1"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/base32"
 	"encoding/binary"
 	"encoding/json"
@@ -11,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -48,25 +51,57 @@ type authCheckResult struct {
 	CheckedAt  string `json:"checked_at"`
 }
 
+// proxyTransport 让自检与原生 HTTP 工具同源出口：记录 MITM/代理池/全局代理。
+// caCert 是记录代理 CA（HTTPS 经 MITM 重签后需要信任）。空 addr 返回 nil=直连。
+func proxyTransport(addr, caCert string) *http.Transport {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return nil
+	}
+	if !strings.Contains(addr, "://") {
+		addr = "http://" + addr
+	}
+	pu, err := url.Parse(addr)
+	if err != nil || pu.Host == "" {
+		return nil
+	}
+	tr := &http.Transport{Proxy: http.ProxyURL(pu)}
+	if caCert != "" {
+		if pem, err := os.ReadFile(caCert); err == nil {
+			pool := x509.NewCertPool()
+			if pool.AppendCertsFromPEM(pem) {
+				tr.TLSClientConfig = &tls.Config{RootCAs: pool}
+			}
+		}
+	}
+	return tr
+}
+
 // runAuthCheck 用任务配置的登录凭据发一次真实登录请求并判定是否成功。
 // 判定规则与 worker prompt 里给的一致：SuccessStatus（0=不校验）与
 // SuccessContains 都满足才算成功；都没配时以 2xx/3xx 作为成功。
 // 返回详情时不带密码/TOTP/响应正文（只给状态码与命中说明）。
-func runAuthCheck(cfg *db.TaskAuthConfig) authCheckResult {
+// proxyAddr / caCert 是平台出口（记录代理 / 代理池 / 全局代理）；空串=直连（测试）。
+func runAuthCheck(cfg *db.TaskAuthConfig, proxyAddr, caCert string) authCheckResult {
 	res := authCheckResult{CheckedAt: time.Now().UTC().Format(time.RFC3339)}
 	start := time.Now()
 	if cfg == nil || !cfg.Enabled {
 		res.Detail = "未配置登录凭据"
 		return res
 	}
-	fields := map[string]string{
-		cfg.UsernameField: cfg.Username,
-		cfg.PasswordField: cfg.Password,
+	mode := strings.ToLower(strings.TrimSpace(cfg.AuthMode))
+	if mode == "" {
+		mode = "form"
+	}
+	fields := map[string]string{}
+	if mode == "form" || mode == "json" {
+		fields[cfg.UsernameField] = cfg.Username
+		fields[cfg.PasswordField] = cfg.Password
 	}
 	for k, v := range cfg.ExtraFields {
 		fields[k] = v
 	}
-	if cfg.HasTOTP {
+	if cfg.HasTOTP && (mode == "form" || mode == "json") {
 		code, err := totpCode(cfg.TOTPSecret, time.Now())
 		if err != nil {
 			res.Detail = err.Error()
@@ -75,45 +110,68 @@ func runAuthCheck(cfg *db.TaskAuthConfig) authCheckResult {
 		res.UsedTOTP = true
 		// 动态码字段名未单独配置时按常见命名填 totp/code/otp。
 		names := []string{"totp", "otp", "code"}
-		placed := false
 		for _, n := range names {
 			if _, exists := fields[n]; !exists {
 				fields[n] = code
-				placed = true
 				break
 			}
 		}
-		_ = placed
 	}
 
 	var req *http.Request
 	var err error
-	if cfg.Method == "GET" {
-		q := url.Values{}
-		for k, v := range fields {
-			q.Set(k, v)
+	switch mode {
+	case "basic":
+		req, err = http.NewRequest(cfg.Method, cfg.LoginURL, nil)
+		if err == nil {
+			if cfg.Token != "" && cfg.Username == "" {
+				req.Header.Set("Authorization", "Basic "+cfg.Token)
+			} else {
+				req.SetBasicAuth(cfg.Username, cfg.Password)
+			}
 		}
-		u := cfg.LoginURL
-		if strings.Contains(u, "?") {
-			u += "&" + q.Encode()
+	case "bearer":
+		req, err = http.NewRequest(cfg.Method, cfg.LoginURL, nil)
+		if err == nil {
+			req.Header.Set("Authorization", "Bearer "+cfg.Token)
+		}
+	case "cookie":
+		req, err = http.NewRequest(cfg.Method, cfg.LoginURL, nil)
+		if err == nil {
+			tok := cfg.Token
+			if !strings.Contains(tok, "=") {
+				tok = "session=" + tok
+			}
+			req.Header.Set("Cookie", tok)
+		}
+	default:
+		if cfg.Method == "GET" {
+			q := url.Values{}
+			for k, v := range fields {
+				q.Set(k, v)
+			}
+			u := cfg.LoginURL
+			if strings.Contains(u, "?") {
+				u += "&" + q.Encode()
+			} else {
+				u += "?" + q.Encode()
+			}
+			req, err = http.NewRequest(http.MethodGet, u, nil)
+		} else if cfg.ContentType == "form" {
+			form := url.Values{}
+			for k, v := range fields {
+				form.Set(k, v)
+			}
+			req, err = http.NewRequest(http.MethodPost, cfg.LoginURL, strings.NewReader(form.Encode()))
+			if err == nil {
+				req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			}
 		} else {
-			u += "?" + q.Encode()
-		}
-		req, err = http.NewRequest(http.MethodGet, u, nil)
-	} else if cfg.ContentType == "form" {
-		form := url.Values{}
-		for k, v := range fields {
-			form.Set(k, v)
-		}
-		req, err = http.NewRequest(http.MethodPost, cfg.LoginURL, strings.NewReader(form.Encode()))
-		if err == nil {
-			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		}
-	} else {
-		body, _ := json.Marshal(fields)
-		req, err = http.NewRequest(http.MethodPost, cfg.LoginURL, bytes.NewReader(body))
-		if err == nil {
-			req.Header.Set("Content-Type", "application/json")
+			body, _ := json.Marshal(fields)
+			req, err = http.NewRequest(http.MethodPost, cfg.LoginURL, bytes.NewReader(body))
+			if err == nil {
+				req.Header.Set("Content-Type", "application/json")
+			}
 		}
 	}
 	if err != nil {
@@ -124,6 +182,9 @@ func runAuthCheck(cfg *db.TaskAuthConfig) authCheckResult {
 		req.Header.Set(k, v)
 	}
 	client := &http.Client{Timeout: 10 * time.Second}
+	if tr := proxyTransport(proxyAddr, caCert); tr != nil {
+		client.Transport = tr
+	}
 	resp, err := client.Do(req)
 	res.ElapsedMS = time.Since(start).Milliseconds()
 	if err != nil {
@@ -178,5 +239,5 @@ func (s *Server) taskAuthCheck(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "该任务未配置登录凭据")
 		return
 	}
-	writeJSON(w, 200, runAuthCheck(t.AuthConfig))
+	writeJSON(w, 200, runAuthCheck(t.AuthConfig, s.m.ProxyAddr(), s.m.ProxyCACert()))
 }
