@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-27
+
 ### Playbook v4 与 KB 技能包（同步上游 v0.4.123）
 
 - 新增 11 个 Task Playbook v4 模板：API 安全、Java 中间件、云/K8s、代码审计、支付逻辑、前端供应链、网络设备/IoT、AI/LLM、数据取证、SRC 验收复测、境外黑灰产取证。
