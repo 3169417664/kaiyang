@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/3169417664/kaiyang/db"
-	"github.com/3169417664/kaiyang/hosttools"
 	"github.com/3169417664/kaiyang/intercept"
 	"github.com/Autumn-27/norma/agentcore"
 	"github.com/Autumn-27/norma/harness"
@@ -440,25 +439,17 @@ func workerSystemWith(agentKey, proxyAddr, caCert, dataDir, runDir, taskOverride
 	if strings.TrimSpace(agentKey) == "" {
 		agentKey = "worker"
 	}
-	def := workerDefaultTmpl
-	if WorkerTemplateDefault != nil {
-		if b := WorkerTemplateDefault(); strings.TrimSpace(b) != "" {
-			def = b
-		}
-	}
-	body := renderSystemWithOverrideProfile(agentKey, def, WorkerVars{ProxyAddr: proxyAddr, DataDir: dataDir, Now: nowStr()}, taskOverride, pp)
+	// Body default comes from the worker template (independent of a custom
+	// executor's key); the DB override is still keyed by agentKey.
+	def, defSource := DefaultBodyFor("worker")
 	// caCert is present only when the recording MITM is on, which is exactly when
 	// the traffic_* tools are registered — so it gates the traffic-tool note.
-	// Optional finding guidance is added for every role after tool resolution.
-	// 作业硬尾巴（v0.4.63）：扫描器优先 + 技能路由，代码注入不可经 UI 改掉。
-	out := body + workerTrafficBlock(caCert != "") + workerEgressBlock(proxyAddr) + workerArtifactSpec(runDir) + scannerFirstGuidance + skillRoutingGuidance + execFaceWorkerGuidance +
-		engagementFraming + impactVerificationGuidance + footholdFactGuidance
-	// 宿主工具清单：真正动手的是 worker，所以清单必须进 worker 的 system prompt。
-	// 之前只有 planner 的唤醒提示里有（用于「派意图选手段」），worker 看不到——
-	// 于是新装的一批工具（dalfox/feroxbuster/chisel…）一次都没被用起来。
-	if t := hosttools.SummaryText(); t != "" {
-		out += "\n\n【本机可用工具】\n" + t
-	}
+	// All code-owned tails (traffic/egress/artifact/scanner/skill routing/exec
+	// face/engagement/impact/foothold/host tools) come from the shared assembly,
+	// so the read-only chain projection cannot drift.
+	out, _ := RuntimeSystem(agentKey, def, defSource,
+		WorkerVars{ProxyAddr: proxyAddr, DataDir: dataDir, Now: nowStr()}, taskOverride, pp,
+		WorkerTailOptions(proxyAddr, caCert, runDir))
 	return out
 }
 

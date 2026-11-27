@@ -1,8 +1,9 @@
 "use client";
 
 import * as React from "react";
+import Link from "next/link";
 import { toast } from "sonner";
-import { Bot, PlusIcon, Trash2Icon } from "lucide-react";
+import { Bot, PlusIcon, Trash2Icon, WaypointsIcon } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -228,12 +229,19 @@ export default function AgentsPage() {
             内置 Agent 的提示词/配置，以及自定义会话 Agent 的创建与管理
           </p>
         </div>
-        <CreateAgentDialog
-          onCreated={(key) => {
-            reload();
-            setEditKey(key);
-          }}
-        />
+        <div className="flex items-center gap-2">
+          <Button asChild size="sm" variant="outline">
+            <Link href="/system/agents/chain">
+              <WaypointsIcon /> 全链路
+            </Link>
+          </Button>
+          <CreateAgentDialog
+            onCreated={(key) => {
+              reload();
+              setEditKey(key);
+            }}
+          />
+        </div>
       </div>
 
       <Card>

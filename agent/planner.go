@@ -465,16 +465,13 @@ func plannerSystem(goal, dataDir, workDir, taskOverride string) string {
 }
 
 func plannerSystemWith(goal, dataDir, workDir, taskOverride string, pp ProfilePrompt) string {
-	def := plannerDefaultTmpl
-	if PlannerTemplateDefault != nil {
-		if b := PlannerTemplateDefault(); strings.TrimSpace(b) != "" {
-			def = b
-		}
-	}
-	body := renderSystemWithOverrideProfile("planner", def, PlannerVars{Goal: goal, DataDir: dataDir, Now: nowStr()}, taskOverride, pp)
-	// 作业硬尾巴（v0.4.63）：漏洞覆盖矩阵/纵深优先 + 授权边界复核。
-	return body + plannerExecutionModeSpec(goal) + artifactSpec(workDir) + coverageMatrixPlannerGuidance + scopeVerifyPlannerGuidance + execFacePlannerGuidance +
-		engagementFraming + impactOrchestrationGuidance + blackboardPlannerGuidance
+	def, defSource := DefaultBodyFor("planner")
+	// 作业硬尾巴（v0.4.63）：漏洞覆盖矩阵/纵深优先 + 授权边界复核。尾巴与只读
+	// 装配链共用 StaticTailSegments，避免页面投影与真实装配各写一份。
+	out, _ := RuntimeSystem("planner", def, defSource,
+		PlannerVars{Goal: goal, DataDir: dataDir, Now: nowStr()}, taskOverride, pp,
+		PlannerTailOptions(goal, workDir))
+	return out
 }
 
 // Plan runs one planning round. emit, if non-nil, receives the planner's execution

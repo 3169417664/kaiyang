@@ -5,7 +5,6 @@ import (
 	"fmt"
 
 	"github.com/3169417664/kaiyang/db"
-	"github.com/3169417664/kaiyang/hosttools"
 	"github.com/3169417664/kaiyang/intercept"
 	"github.com/Autumn-27/norma/agentcore"
 	"github.com/Autumn-27/norma/llm"
@@ -143,13 +142,11 @@ func mainAgentSystem(goal, dataDir, workDir string) string {
 }
 
 func mainAgentSystemWith(goal, dataDir, workDir string, pp ProfilePrompt) string {
-	body := renderSystemWith("mainagent", mainAgentDefaultTmpl, MainVars{Goal: goal, DataDir: dataDir, Now: nowStr()}, pp)
-	// mainagent 也有 Bash 工具（基础默认工具集），会自己动手查证，
-	// 所以宿主工具清单同样要给它——不然它只能凭想象回答人。
-	out := body + artifactSpec(workDir) + engagementFraming + impactOrchestrationGuidance + srcTaskBookGuidance
-	if t := hosttools.SummaryText(); t != "" {
-		out += "\n\n【本机可用工具】\n" + t
-	}
+	// mainagent 也有 Bash 工具（基础默认工具集），会自己动手查证，所以宿主工具
+	// 清单同样要给它。所有尾巴来自共享装配（RuntimeSystem）。
+	out, _ := RuntimeSystem("mainagent", mainAgentDefaultTmpl, "builtin_default",
+		MainVars{Goal: goal, DataDir: dataDir, Now: nowStr()}, "", pp,
+		MainAgentTailOptions(workDir))
 	return out
 }
 
