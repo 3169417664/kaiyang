@@ -2013,3 +2013,27 @@ CREATE INDEX IF NOT EXISTS idx_task_credentials_task ON task_credentials(task_id
 -- RPS/允许扫描器/dry-run/allow_race。NULL=未配置（现有任务零行为变化）；
 -- 写入端做长度与枚举校验，不含凭据。读取走窄查询，不进 taskCols/scanTask 热路径。
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS program_profile JSONB;
+
+-- ── §CLEANUP-JOBS  任务删除后的异步清理队列 ─────────────────────────
+-- 任务删除的 PG 事务只删任务行并把流量/LLM/文件清理写进本表，秒级提交；
+-- 后台单通道 worker 分批执行，进程重启后从 pending 续跑。done/failed 行保留
+-- 作审计；同一 (task,kind) 同时最多一个 pending/running，防止重复入队。
+CREATE TABLE IF NOT EXISTS cleanup_jobs (
+  id          BIGSERIAL PRIMARY KEY,
+  task_id     BIGINT,
+  kind        TEXT NOT NULL,
+  payload     JSONB NOT NULL DEFAULT '{}'::jsonb,
+  state       TEXT NOT NULL DEFAULT 'pending',
+  attempts    INT NOT NULL DEFAULT 0,
+  total       BIGINT NOT NULL DEFAULT 0,
+  done        BIGINT NOT NULL DEFAULT 0,
+  last_error  TEXT NOT NULL DEFAULT '',
+  run_after   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_cleanup_jobs_state ON cleanup_jobs(state, run_after, id);
+CREATE INDEX IF NOT EXISTS idx_cleanup_jobs_task ON cleanup_jobs(task_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_cleanup_jobs_active
+  ON cleanup_jobs(task_id, kind)
+  WHERE state IN ('pending','running') AND task_id IS NOT NULL;

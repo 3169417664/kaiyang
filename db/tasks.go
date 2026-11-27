@@ -684,7 +684,7 @@ func (d *DB) DeleteTaskCascade(id int64, deleteAssets, deleteFindings bool, dele
 func (d *DB) DeleteTaskCascadePrepared(
 	id int64,
 	deleteAssets, deleteFindings, deleteLLMRecords bool,
-	prepare func(TaskDeletePreparation) error,
+	prepare func(*sql.Tx, TaskDeletePreparation) error,
 ) (TaskDeleteResult, error) {
 	var result TaskDeleteResult
 	tx, err := d.Begin()
@@ -714,7 +714,7 @@ func (d *DB) DeleteTaskCascadePrepared(
 		if err != nil {
 			return result, err
 		}
-		if err := prepare(TaskDeletePreparation{
+		if err := prepare(tx, TaskDeletePreparation{
 			ExplorationID: expID,
 			TrafficHosts:  hosts,
 		}); err != nil {
