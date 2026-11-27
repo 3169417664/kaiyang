@@ -188,6 +188,34 @@ function McpHealthBadge({ server }: { server: MCPServer }) {
   );
 }
 
+// McpToolsFingerprintBadge 展示工具描述指纹状态（上游 v0.4.123）：
+//   - 命中提示注入话术 → 红色「描述可疑 · N」；
+//   - 描述相对上次发现发生变化 → 蓝色「描述已变更」。
+// 只告警，不自动禁用：升级、本地改描述与 rug-pull 在指纹上无法区分，需人工核对。
+function McpToolsFingerprintBadge({ server }: { server: MCPServer }) {
+  if ((server.tools_suspicious ?? 0) > 0) {
+    return (
+      <Badge
+        variant="destructive"
+        title={`${server.tools_suspicious} 个工具描述命中提示注入话术；请在工具详情里人工核对`}
+      >
+        描述可疑 · {server.tools_suspicious}
+      </Badge>
+    );
+  }
+  if (server.tools_changed) {
+    return (
+      <Badge
+        variant="outline"
+        title={`工具描述相对上次发现发生变化（${server.tools_hash_at ?? "时间未知"}）；升级或疑似 rug-pull，请核对`}
+      >
+        描述已变更
+      </Badge>
+    );
+  }
+  return null;
+}
+
 export default function MCPPage() {
   const [servers, setServers] = React.useState<MCPServer[]>([]);
   const [agents, setAgents] = React.useState<Agent[]>([]);
@@ -587,6 +615,7 @@ export default function MCPPage() {
                   {s.transport}
                 </Badge>
                 <McpHealthBadge server={s} />
+                <McpToolsFingerprintBadge server={s} />
                 <div className="ml-auto flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
                   <Switch
                     checked={s.enabled}

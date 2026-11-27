@@ -14,12 +14,14 @@ import (
 	"github.com/3169417664/kaiyang/db"
 	"github.com/3169417664/kaiyang/hosttools"
 	"github.com/3169417664/kaiyang/intercept"
+	"github.com/3169417664/kaiyang/telemetry"
 	"github.com/Autumn-27/norma/agentcore"
 	"github.com/Autumn-27/norma/harness"
 	"github.com/Autumn-27/norma/llm"
 	"github.com/Autumn-27/norma/permission"
 	actool "github.com/Autumn-27/norma/tool"
 	"github.com/Autumn-27/norma/transcript"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // Worker is an LLM work agent (docs §4.4): it claims ONE intent, completes it
@@ -611,6 +613,12 @@ func firstCancel(cs []func(error)) func(error) {
 }
 
 func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.AssetStore, ts *db.ExplorationStore, intent *db.Node, hooks harness.HookRunner, emit func(db.Activity), enr EnrichTrigger, notifyFinding func(int64, string), requestID, message string, workCancel func(error)) (harness.TerminalReason, WriteCounts, error) {
+	ctx, span := telemetry.Start(ctx, "kaiyang.worker",
+		attribute.Int64("task.id", taskID),
+		attribute.Int64("intent.id", intent.ID),
+		attribute.String("gen_ai.request.model", w.model),
+	)
+	defer span.End()
 	tsx := NewToolSet(ts, name)
 	tsx.SetEgressProxy(w.proxyAddr, w.proxyCACert) // 原生 http_request/session_login 与 Bash 同源出口
 	tsx.SetTaskCredentialResolver(w.taskCredResolver)
