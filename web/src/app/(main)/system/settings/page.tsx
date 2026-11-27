@@ -12,13 +12,23 @@ import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { usePermissions } from "@/hooks/use-permissions";
 import { api } from "@/lib/api";
 import { CHAT_SEND_MODE_OPTIONS, type ChatSendMode, setChatSendMode, useChatSendMode } from "@/lib/chat-send-mode";
 import type { Settings } from "@/lib/types";
 
+import { BenchCard } from "./_components/bench-card";
+import { BudgetCard } from "./_components/budget-card";
+import { ResourceCard } from "./_components/resource-card";
+import { TLSCard } from "./_components/tls-card";
+import { ToolVisibilityCard } from "./_components/tool-visibility-card";
+import { TrafficRetentionCard } from "./_components/traffic-retention-card";
 import { UpdateCard } from "./_components/update-card";
 
 export default function SystemSettingsPage() {
+  // 管理面卡片按 config:read 隐藏；权限加载中先展示，后端仍是最终权威。
+  const { permissions } = usePermissions();
+  const canConfig = permissions === null || permissions.has("config:read");
   const [trafficCapture, setTrafficCapture] = React.useState(false);
   const [agentTrafficBinding, setAgentTrafficBinding] = React.useState(false);
   const [webSearch, setWebSearch] = React.useState(false);
@@ -231,8 +241,10 @@ export default function SystemSettingsPage() {
   const toggleTraffic = (v: boolean) => {
     setTrafficCapture(v); // optimistic
     setSaving(true);
+    // traffic_mode 是后端的三段式主开关；这里切换总开关时同步为 off/full，
+    // 避免旧的 traffic_capture 布尔与 evidence/full 模式不一致。
     api
-      .setSettings({ traffic_capture: v })
+      .setSettings({ traffic_capture: v, traffic_mode: v ? "full" : "off" })
       .then(apply)
       .catch(() => setTrafficCapture(!v)) // revert on failure
       .finally(() => setSaving(false));
@@ -406,6 +418,22 @@ export default function SystemSettingsPage() {
           column-gap 只管列间距，行间距要由子元素自己给。 */}
       <div className="columns-1 gap-4 md:gap-6 lg:columns-2">
         <UpdateCard />
+
+        {canConfig && (
+          <div className="mb-4 break-inside-avoid md:mb-6">
+            <TLSCard />
+          </div>
+        )}
+
+        {canConfig && <ResourceCard className="mb-4 break-inside-avoid md:mb-6" />}
+
+        {canConfig && <TrafficRetentionCard className="mb-4 break-inside-avoid md:mb-6" />}
+
+        {canConfig && <BudgetCard className="mb-4 break-inside-avoid md:mb-6" />}
+
+        {canConfig && <ToolVisibilityCard className="mb-4 break-inside-avoid md:mb-6" />}
+
+        {canConfig && <BenchCard className="mb-4 break-inside-avoid md:mb-6" />}
 
         <Card className="mb-4 break-inside-avoid md:mb-6">
           <CardHeader>

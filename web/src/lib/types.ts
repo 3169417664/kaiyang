@@ -900,6 +900,7 @@ export interface TaskAuthConfigView {
   login_url: string;
   method: string;
   content_type: string;
+  auth_mode?: string; // form|json|basic|bearer|cookie；空=form
   username_field?: string;
   password_field?: string;
   username?: string;
@@ -1140,6 +1141,18 @@ export interface Settings {
   // 意图级软预算（v0.4.28）：单意图累计 token 到顶注入收尾提醒（不杀进程）。
   intent_budget_enabled?: boolean; // 默认 true
   intent_budget_tokens?: number; // 默认 3000000，范围 500000–20000000
+  // 任务级预算（v0.4.101）：0=不限；达到 warn_pct 提醒，100% 收尾。
+  task_budget_tokens?: number;
+  task_budget_usd?: number;
+  task_budget_minutes?: number;
+  task_budget_warn_pct?: number;
+  // 三段式流量留存：off=不抓；evidence=按短窗口+pin 保留证据；full=按保留天数全量保存。
+  traffic_mode?: "off" | "evidence" | "full";
+  traffic_retention_days?: number; // 0=关闭
+  traffic_evidence_window_hours?: number; // evidence 模式的短窗口
+  traffic_evidence_max_gb?: number; // evidence 模式的容量上限
+  // 工具 schema 可见上限（P2-2）：0=关闭（默认），20–40 启用；每 run 读取即时生效。
+  tool_visibility_limit?: number;
   // 证据逐字回验（v0.4.29）：off=关闭 / warn=只提示（默认）/ block=critical/high 无出处打回。
   finding_evidence_verify?: "off" | "warn" | "block";
   // 工具输出注入告警（v0.4.29）：命中高精度注入特征时提醒模型「当数据不当指令」。
@@ -2329,4 +2342,210 @@ export interface SSHProvider {
   status?: string;
   socks_addr?: string;
   started_at?: string;
+}
+
+// ---- 删除后的后台清理队列（GET /api/cleanup/jobs） ----
+export interface CleanupJob {
+  id: number;
+  task_id?: number;
+  kind: "traffic" | "llm" | "files" | string;
+  state: "pending" | "running" | "done" | "failed";
+  attempts: number;
+  total: number;
+  done: number;
+  last_error?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+// ---- 流量保留策略（未引用流量 TTL / evidence 短窗口） ----
+export interface TrafficRetentionStatus {
+  mode: "off" | "evidence" | "full" | string;
+  days: number;
+  traffic_evidence_window_hours: number;
+  traffic_evidence_max_gb: number;
+  storage_llm_keep_days?: number;
+  storage_llm_max_rows?: number;
+  enabled: boolean;
+  cutoff: number; // unix seconds；0 = 未开启
+  total: number;
+  candidates: number;
+  protected: number;
+  deletable: number;
+  evidence_pinned?: number;
+}
+
+export interface TrafficRetentionResult {
+  dry_run: boolean;
+  mode?: string;
+  days: number;
+  traffic_evidence_window_hours?: number;
+  cutoff: number;
+  candidates: number;
+  protected: number;
+  deletable: number;
+  deleted?: number;
+  legacy_dirs?: number;
+  blob_reclaimed?: boolean;
+  capacity?: boolean;
+}
+
+// ---- 内置 HTTPS 与证书管理 ----
+export type TLSMode = "off" | "selfsigned" | "import" | "acme";
+
+export interface TLSACMEConfig {
+  identifiers: string[];
+  email: string;
+  staging: boolean;
+  /** http-01 | tls-alpn-01 */
+  challenge: string;
+  http_addr: string;
+  tls_addr: string;
+}
+
+export interface TLSSettings {
+  mode: TLSMode;
+  https_addr: string;
+  hsts: boolean;
+  self_signed_sans: string[];
+  firewall_auto: boolean;
+  acme: TLSACMEConfig;
+}
+
+export interface TLSCertInfo {
+  subject: string;
+  issuer: string;
+  sans: string[];
+  not_before: string;
+  not_after: string;
+  /** selfsigned | import | acme | file */
+  source: string;
+}
+
+export interface TLSACMEStatus {
+  running: boolean;
+  last_error?: string;
+  next_renew?: string;
+  identifiers?: string[];
+  email?: string;
+  staging?: boolean;
+  challenge?: string;
+}
+
+export interface TLSStatus {
+  mode: TLSMode;
+  https_addr: string;
+  cert?: TLSCertInfo;
+  ca_available: boolean;
+  last_error?: string;
+  needs_restart: boolean;
+  acme: TLSACMEStatus;
+}
+
+export interface TLSFirewallStatus {
+  available: boolean;
+  backend?: string;
+  active?: boolean;
+  hint?: string;
+  error?: string;
+  leases?: { id: string; port: number; proto: string; backend: string; expires_at: string }[];
+}
+
+export interface TLSStatusResp {
+  status: TLSStatus;
+  settings: TLSSettings;
+  /** 当前进程是否真的以 TLS 监听。 */
+  active: boolean;
+  /** 当前进程实际监听的地址（与设置不同即需要重启）。 */
+  active_addr?: string;
+  /** 设置表里是否保存过监听地址；false 时以启动参数 -addr 为准。 */
+  addr_saved?: boolean;
+  listen_addr: string;
+  urls: string[];
+  firewall: TLSFirewallStatus;
+}
+
+// ---- 资源自适应（GET/PUT /api/resource） ----
+export interface ResourceCapacity {
+  cpu_cores: number;
+  mem_total: number;
+  mem_available: number;
+  mem_current: number;
+  disk_total: number;
+  disk_free: number;
+  load1: number;
+  cgroup_v2: boolean;
+  in_container: boolean;
+  mem_from_cgroup?: boolean;
+  cpu_from_cgroup?: boolean;
+  warnings?: string[];
+  detected_at?: string;
+}
+
+export interface ResourcePlan {
+  enabled: boolean;
+  mode: "auto" | "manual" | string;
+  workers: number;
+  task_concurrency: number;
+  max_jobs: number;
+  job_max_per_task: number;
+  job_memory_mb: number;
+  job_cpu_percent: number;
+  job_runtime_s: number;
+  scanner_scale: number;
+  gomemlimit_mb: number;
+  gomaxprocs: number;
+  cracker_workload: number;
+  cracker_runtime_s: number;
+  reasons?: string[];
+  generated_at?: string;
+}
+
+export interface ResourceManual {
+  workers?: number;
+  max_jobs?: number;
+  job_max_per_task?: number;
+  job_memory_mb?: number;
+  job_cpu_percent?: number;
+  scanner_scale?: number;
+  gomemlimit_mb?: number;
+  gomaxprocs?: number;
+  cracker_workload?: number;
+  cracker_runtime_s?: number;
+}
+
+export interface ResourceSettings {
+  auto_tune: boolean;
+  mode: "auto" | "manual";
+  threshold_high: number;
+  threshold_critical: number;
+  auto_pause_scans: boolean;
+  manual: ResourceManual;
+}
+
+/** 生效值：与计划分开，因为显式 workers / 任务并发设置优先于计划。 */
+export interface ResourceEffective {
+  workers?: number;
+  task_concurrency_enabled?: boolean;
+  task_concurrency_limit?: number;
+  job_gate?: boolean;
+  scanner_scale?: number;
+  gomaxprocs?: number;
+  gomemlimit_mb?: number;
+}
+
+export interface ResourceStatus {
+  capacity: ResourceCapacity;
+  plan: ResourcePlan;
+  initialized: boolean;
+  settings: ResourceSettings;
+  effective?: ResourceEffective;
+  usage: {
+    mem_current: number;
+    mem_total: number;
+    load1: number;
+    cgroup_v2: boolean;
+    container: boolean;
+  };
+  generated_at?: string;
 }
