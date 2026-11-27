@@ -4,6 +4,13 @@
 
 ## [Unreleased]
 
+### LLM 全链路可视化（同步上游 v0.4.121）
+
+- `GET /api/agents/{key}/prompt/chain`：只读装配链投影，支持 `profile_id` 预览；不建 provider、不连 MCP、不返回密钥。
+- 运行时装配与投影共用同一套 `PromptSegment`，避免两份实现漂移；保留技能索引与代码硬尾语义。
+- `/system/agents/chain` 页面：LLM 解析梯、提示词分段、工具/MCP/Skill 轨、门控/运行时注入点、TERMINAL 硬边界、小地图/缩放；Agent 列表与编辑器加入口。
+
+
 ### 可观测性与离线审计（同步上游 v0.4.97/v0.4.118/v0.4.123）
 
 - **OpenTelemetry**：opt-in OTLP 追踪，默认 no-op；HTTP/任务/意图/工具 span 不记录正文/密钥。
