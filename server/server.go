@@ -30,6 +30,7 @@ import (
 	"github.com/3169417664/kaiyang/llmpool"
 	"github.com/3169417664/kaiyang/llmrec"
 	"github.com/3169417664/kaiyang/report"
+	"github.com/3169417664/kaiyang/telemetry"
 	"github.com/3169417664/kaiyang/tlsmgr"
 	"github.com/3169417664/kaiyang/traffic"
 	"github.com/3169417664/kaiyang/vault"
@@ -373,6 +374,8 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 	s.wireInterceptReviewer() // LLM 兜底审批:未命中拦截规则的命令交给模型判定
 	// 每小时重算一次，跟上扩容/容器限额调整；只重算计划，不写系统配置。
 	go s.resourceLoop(ctx)
+	// OpenTelemetry（上游 v0.4.118 P2-3）：从设置读取；默认关闭 = 全局 no-op。
+	s.applyTelemetry(ctx)
 	return s
 }
 
@@ -382,6 +385,8 @@ func (s *Server) Close() {
 	if s == nil {
 		return
 	}
+	// Flush buffered traces before the process exits; no-op when tracing is off.
+	telemetry.Disable()
 }
 
 // Restored deadline and worker loops must inherit the same context as new tasks,
@@ -1277,7 +1282,9 @@ func (s *Server) Handler() http.Handler {
 	// /api/* goes through CORS + JWT; everything else is served by the embedded
 	// frontend (public — auth is enforced client-side and on the API). With the
 	// no-embed build the webui handler just 404s (run `next dev` separately).
-	api := accessLog(securityHeaders(limitRequestBody(s.requireAuth(mux))))
+	// telemetry 中间件默认纯透传（只做一次原子读）；启用后为 /api 请求产生 span，
+	// 只记方法/归一化路由/状态码，不记录查询串、请求正文或头。
+	api := accessLog(securityHeaders(limitRequestBody(telemetry.Middleware(s.requireAuth(mux)))))
 	root := http.NewServeMux()
 	root.Handle("/api/", api)
 	root.Handle("/", s.webuiHandler())
@@ -3906,6 +3913,7 @@ func (s *Server) settingsPayload() map[string]any {
 	apc := autopilotConfigFromPG(s.m.pg)
 	ib := intentBudgetFromPG(s.m.pg)
 	tb := taskBudgetFromPG(s.m.pg)
+	otelOn, otelEndpoint, otelRatio := otelSettingsEcho(s.m.pg)
 	return map[string]any{
 		"traffic_capture":               s.m.TrafficEnabled(),
 		"traffic_mode":                  s.m.TrafficMode(),
@@ -3978,6 +3986,10 @@ func (s *Server) settingsPayload() map[string]any {
 		// 漏洞情报/回连配置(net_context 工具读取展示给 agent)
 		"egress_hint":     egressHint(s.m.pg),
 		"egress_port_map": egressPortMap(s.m.pg),
+		// OpenTelemetry（上游 v0.4.118 P2-3）：默认关闭；仅在配置 endpoint 时导出。
+		"otel_enabled":      otelOn,
+		"otel_endpoint":     otelEndpoint,
+		"otel_sample_ratio": otelRatio,
 	}
 }
 
@@ -4120,6 +4132,11 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		// 工具读取展示给 agent)。null=不改,空串=清空。
 		EgressHint    *string `json:"egress_hint"`
 		EgressPortMap *string `json:"egress_port_map"`
+		// OpenTelemetry（上游 v0.4.118 P2-3）：默认关闭。endpoint 为 OTLP/HTTP
+		// 地址，空串=不导出；sample_ratio 取值 0–1。改完即时重建 provider。
+		OTELEnabled     *bool    `json:"otel_enabled"`
+		OTELEndpoint    *string  `json:"otel_endpoint"`
+		OTELSampleRatio *float64 `json:"otel_sample_ratio"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, 400, err.Error())
@@ -4167,6 +4184,43 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 500, err.Error())
 			return
 		}
+	}
+	// OpenTelemetry：三个键统一落库后重建一次 provider（0 次或 1 次，不按字段多次）。
+	otelTouched := false
+	if req.OTELSampleRatio != nil {
+		if *req.OTELSampleRatio < 0 || *req.OTELSampleRatio > 1 {
+			writeErr(w, 400, "otel_sample_ratio 必须在 0–1 之间")
+			return
+		}
+		if err := s.m.pg.SetSetting(settingOTELSampleRatio,
+			strconv.FormatFloat(*req.OTELSampleRatio, 'f', -1, 64)); err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+		otelTouched = true
+	}
+	if req.OTELEndpoint != nil {
+		ep := strings.TrimSpace(*req.OTELEndpoint)
+		if ep != "" && !strings.HasPrefix(ep, "http://") && !strings.HasPrefix(ep, "https://") {
+			writeErr(w, 400, "otel_endpoint 需以 http:// 或 https:// 开头（空串=不导出）")
+			return
+		}
+		if err := s.m.pg.SetSetting(settingOTELEndpoint, ep); err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+		otelTouched = true
+	}
+	if req.OTELEnabled != nil {
+		if err := s.m.pg.SetBool(settingOTELEnabled, *req.OTELEnabled); err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+		otelTouched = true
+	}
+	if otelTouched {
+		// 用服务生命周期 ctx，而不是请求 ctx：provider 在请求结束后仍需存活。
+		s.applyTelemetry(s.ctx)
 	}
 	if req.NotifyEnabled != nil {
 		if err := s.m.pg.SetBool(settingNotifyEnabled, *req.NotifyEnabled); err != nil {

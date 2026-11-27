@@ -1446,6 +1446,11 @@ export interface MCPServer {
   last_error?: string;
   last_latency_ms?: number;
   tool_count?: number;
+  // 工具描述指纹（上游 v0.4.123）：变化=升级或疑似 rug-pull，只告警不自动禁用。
+  tools_hash?: string;
+  tools_hash_at?: string;
+  tools_changed?: boolean;
+  tools_suspicious?: number;
 }
 
 export interface MCPTool {

@@ -9,6 +9,10 @@
 //	 把内置 agent 提示词更新到当前二进制内置版本（老库的 prompt 是首次安装
 //	 时的旧版，新版本不会自动覆盖）。默认只报告差异；--force 才写回（会覆盖
 //	 该 agent 的自定义编辑，慎用）。
+//
+//	kaiyang-maint idscan --config /opt/kaiyang/config.json [--db FILE] [--out FILE]
+//	 离线只读扫描流量索引，统计品牌/能力/工具默认值命中与录制覆盖率。
+//	 不连 PostgreSQL、不发网络请求、不写流量库（上游 v0.4.97 #40）。
 package main
 
 import (
@@ -43,10 +47,16 @@ const (
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: kaiyang-maint <scan-artifacts|previews|reset-prompts|fix-permissions|scope-audit|bench> --config <config.json> [--force] [--out file]")
+		fmt.Fprintln(os.Stderr, "usage: kaiyang-maint <scan-artifacts|previews|reset-prompts|fix-permissions|scope-audit|bench|idscan> --config <config.json> [--force] [--out file]")
 		os.Exit(2)
 	}
 	cmd := os.Args[1]
+	// idscan 离线只读：不连 PostgreSQL、不构造 Traffic（后者会起代理），所以
+	// 必须在共享 FlagSet 与 db.Open 之前分流。
+	if cmd == "idscan" {
+		runIDScan(os.Args[2:])
+		return
+	}
 	// bench 是只读评测入口：不建表、不 seed、不写库，必须在 db.Open 之前分流。
 	if cmd == "bench" {
 		runBench(os.Args[2:])
