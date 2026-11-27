@@ -91,6 +91,12 @@ func (t *ToolSet) authRequest() actool.CoreTool {
 			if !strings.HasPrefix(a.URL, "http://") && !strings.HasPrefix(a.URL, "https://") {
 				return actool.Errorf("url 必须是绝对地址（http:// 或 https:// 开头）"), nil
 			}
+			// curl -H 的值只允许可打印 ASCII，且禁止 @ 前缀（@file 会读取本地文件）。
+			for _, line := range strings.Split(a.Header, "\n") {
+				if _, err := normalizeHeaderValue(line); err != nil {
+					return actool.Errorf(fmt.Sprintf("header 非法: %v", err)), nil
+				}
+			}
 
 			// 取资产（限定在本任务范围内——不能拿别的任务的凭据）。
 			assets, err := t.as.GetByIDsInScope(t.taskID, []int64{a.AssetID})

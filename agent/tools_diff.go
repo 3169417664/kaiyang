@@ -499,6 +499,12 @@ func (t *ToolSet) diffResponses() actool.CoreTool {
 			if err := os.MkdirAll(workDir, 0o755); err != nil {
 				return actool.Errorf("创建工作目录失败: " + err.Error()), nil
 			}
+			// curl -H 的值只允许可打印 ASCII，且禁止 @ 前缀（@file 会读取本地文件）。
+			for _, h := range []string{a.HeaderA, a.HeaderB} {
+				if _, err := normalizeHeaderValue(h); err != nil {
+					return actool.Errorf(fmt.Sprintf("header 非法: %v", err)), nil
+				}
+			}
 			scriptPath, err := WriteDiffScript(workDir)
 			if err != nil {
 				return actool.Errorf("写出差分脚本失败: " + err.Error()), nil

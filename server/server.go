@@ -187,6 +187,7 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		log.Printf("[credentials] 存量 auth 迁移失败: %v", err)
 	}
 	agent.KnowledgeStore = s.kb()
+	agent.FindingLookup = m.pg.GetFinding
 	s.engine.SetCustomExecutor(s.runCustomExecutorFor)
 	s.bootstrapRBAC()
 	s.seedFusion()
