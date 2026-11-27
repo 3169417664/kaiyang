@@ -129,23 +129,20 @@ func DecomposeGoalsWithProvider(ctx context.Context, prov llm.Provider, dataDir,
 	// Description rides in the user message (same channel as the goal), NOT via the
 	// {{.EngagementDescription}} template var — else a prompt that references the var
 	// would inject the description twice. System prompt stays pure static instructions.
-	sys := renderSystemWith("goals", goalsDefaultTmpl, GoalsVars{DataDir: dataDir, Now: nowStr()}, ProfilePromptFrom(ctx))
-	// 执行模式代码尾巴：目标文本明确「只验证漏洞、不需要 Shell」时，Goal 不得
-	// 再把 getshell/立足点写成完成条件。识别逻辑在 execution_mode.go，老库提示词
-	// 不需要重复这段契约。
-	sys += goalExecutionModeSpec(goalText, desc)
-	// 验收标准代码尾巴：即使老库的 goals 提示词只 seed 过一次、用户没重播，
-	// criteria 也必须写成“匿名读 N 条含敏感字段 / 两身份越权回读 / 自建对象写测试回读”式危害证明。
-	sys += goalsVerificationTail
+	// 执行模式 / 验收标准 / 范围提取三段都是代码尾巴，与只读装配链共用
+	// StaticTailSegments；执行模式尾巴依据任务目标文本（运行时输入）。
+	scopeOn := as != nil && taskID > 0
+	sys, _ := RuntimeSystem("goals", goalsDefaultTmpl, "builtin_default",
+		GoalsVars{DataDir: dataDir, Now: nowStr()}, "", ProfilePromptFrom(ctx),
+		GoalsTailOptions(goalExecutionModeSpec(goalText, desc), scopeOn))
 	// set_constraints 始终可用(不依赖 asset store):正文已含「先抽操作约束再拆目标」这步
 	// (可在 agent 编辑页改措辞),这里只需接上工具。
 	tools := []actool.CoreTool{tsx.setGoals(), tsx.setConstraints()}
 	// Wire add_task_scope only when we have a real asset store + task to write to.
 	// The scope-extraction tail is appended in lockstep so the prompt never asks for
 	// a tool that isn't present.
-	if as != nil && taskID > 0 {
+	if scopeOn {
 		tools = append(tools, tsx.addTaskScope())
-		sys += goalsScopeTail
 	}
 	userMsg := "任务目标：\n" + goalText
 	if d := strings.TrimSpace(desc); d != "" {

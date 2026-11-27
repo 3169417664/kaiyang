@@ -20,6 +20,8 @@ func TestPermissionForRequestMapsCoreRoutes(t *testing.T) {
 		{http.MethodGet, "/api/tasks/12/topology", "topology:read", true},
 		{http.MethodPost, "/api/tasks/12/topology/nodes", "topology:write", true},
 		{http.MethodGet, "/api/tasks/12/llm/resolution", "llm:read", true},
+		{http.MethodGet, "/api/agents/planner/prompt/chain", "agent:read", true},
+		{http.MethodGet, "/api/agents/work_x/llm-route", "agent:read", true},
 		{http.MethodGet, "/api/tasks/12/program-profile", "task:read", true},
 		{http.MethodPut, "/api/tasks/12/program-profile", "task:write", true},
 		{http.MethodGet, "/api/tasks/12/credentials", "task:read", true},
