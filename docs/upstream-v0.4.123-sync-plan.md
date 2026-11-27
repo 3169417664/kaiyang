@@ -13,22 +13,22 @@
 
 ## 批次 2：上下文与经验（建议下一批）
 
-- [ ] 覆盖率矩阵（asset × dimension）同源到 planner/autopilot/报告
-- [ ] 终态 reflection + `intent_reflections`，planner/worker 注入
-- [ ] 上下文分层 Index/Summary/Raw，Summary 12KB 预算
-- [ ] 长意图摘要窗口化（v0.4.106）
+- [x] 覆盖率矩阵（asset × dimension）同源到 planner/autopilot/报告
+- [x] 终态 reflection + `intent_reflections`，planner/worker 注入
+- [x] 上下文分层 Index/Summary/Raw，Summary 12KB 预算
+- [x] 长意图摘要窗口化（v0.4.106）
 - [ ] `search_experience` / playbook 武器库 / 资产 SimHash
 
 ## 批次 3：预算与回归
 
-- [ ] 任务级 token/USD/墙钟预算网关
+- [x] 任务级 token/USD/墙钟预算网关
 - [ ] 确定性回归库 `finding_regressions` + 回放
 - [ ] 离线评测 harness `bench score/validate/compare` + pricing
 
 ## 批次 4：运维与部署
 
-- [ ] MCP 启动健康检查与错误脱敏
-- [ ] 附件配额/落盘清理闭环
+- [x] MCP 启动健康检查与错误脱敏
+- [x] 附件配额/落盘清理闭环
 - [ ] 任务多角色测试凭据池
 - [ ] 未引用流量 TTL 清理
 - [ ] 任务删除异步清理队列
