@@ -4,6 +4,13 @@
 
 ## [Unreleased]
 
+### Playbook v4 与 KB 技能包（同步上游 v0.4.123）
+
+- 新增 11 个 Task Playbook v4 模板：API 安全、Java 中间件、云/K8s、代码审计、支付逻辑、前端供应链、网络设备/IoT、AI/LLM、数据取证、SRC 验收复测、境外黑灰产取证。
+- 独立 `task_playbooks_v4` flag，与 v1/v2 解耦；同名用户模板不覆盖、重复 seed 幂等。
+- 补齐 3 个 KB packs 数据目录（cloud-k8s / java-middleware / web-api）。
+
+
 ### LLM 全链路可视化（同步上游 v0.4.121）
 
 - `GET /api/agents/{key}/prompt/chain`：只读装配链投影，支持 `profile_id` 预览；不建 provider、不连 MCP、不返回密钥。
