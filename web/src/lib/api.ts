@@ -24,6 +24,7 @@ import type {
   BatchCategoryItem,
   BatchControlItem,
   ChatAttachment,
+  CleanupJob,
   CommandRecord,
   Company,
   CompanyScopeMutation,
@@ -65,6 +66,8 @@ import type {
   ReportRecord,
   ReportSettings,
   ReportTemplate,
+  ResourceManual,
+  ResourceStatus,
   ReportTemplateInput,
   ReportAsset,
   FindingEnrichment,
@@ -139,6 +142,12 @@ import type {
   TrafficEvidenceRole,
   TrafficHost,
   TrafficResp,
+  TrafficRetentionResult,
+  TrafficRetentionStatus,
+  TLSACMEConfig,
+  TLSCertInfo,
+  TLSSettings,
+  TLSStatusResp,
   ProxyPoolState,
   C2Config,
   C2ConfigPatch,
@@ -1038,10 +1047,51 @@ export const api = {
   // Purges every exchange and compacts the index; `reclaimed` is the bytes of
   // index handed back to the filesystem. Evidence bound to findings is kept.
   trafficDeleteAll: () => del<{ deleted: number; reclaimed: number }>(`/traffic/all`),
+  // 未引用流量 TTL：GET 计算 dry-run；POST 显式 dry_run=false 才删除。
+  trafficRetention: () => get<TrafficRetentionStatus>(`/traffic/retention`),
+  trafficRetentionRun: (dryRun = true) =>
+    post<TrafficRetentionResult>(`/traffic/retention`, { dry_run: dryRun }),
+  // 删除后的异步清理队列：流量/LLM/文件在后台分批处理。
+  cleanupJobs: (activeOnly = false) =>
+    get<{ jobs: CleanupJob[] }>(`/cleanup/jobs${activeOnly ? "?active=1" : ""}`),
+  retryCleanupJob: (id: number) => post<{ ok: boolean }>(`/cleanup/jobs/${id}/retry`, {}),
 
   // ---- app settings (runtime toggles) ----
   settings: () => get<Settings>(`/settings`),
   setSettings: (patch: Partial<Settings>) => put<Settings>(`/settings`, patch),
+
+  // ---- 资源自适应（容量探测 / 计划 / 手工覆盖） ----
+  resourceStatus: () => get<ResourceStatus>(`/resource`),
+  updateResource: (patch: {
+    auto_tune?: boolean;
+    mode?: "auto" | "manual";
+    threshold_high?: number;
+    threshold_critical?: number;
+    auto_pause_scans?: boolean;
+    manual?: ResourceManual;
+  }) => put<ResourceStatus>(`/resource`, patch),
+  retuneResource: () => post<ResourceStatus>(`/resource/retune`, {}),
+
+  // ---- 内置 HTTPS 与证书管理 ----
+  tlsStatus: () => get<TLSStatusResp>(`/tls/status`),
+  saveTLSSettings: (patch: Partial<TLSSettings>) =>
+    put<{ ok: boolean; needs_restart: boolean; settings: TLSSettings }>(`/tls/settings`, patch),
+  tlsImport: (certPEM: string, keyPEM: string) =>
+    post<{ ok: boolean; cert: TLSCertInfo; needs_restart: boolean }>(`/tls/import`, {
+      cert_pem: certPEM,
+      key_pem: keyPEM,
+    }),
+  tlsSelfSigned: (sans: string[]) =>
+    post<{ ok: boolean; cert: TLSCertInfo; needs_restart: boolean }>(`/tls/selfsigned`, { sans }),
+  tlsIssueACME: (cfg: TLSACMEConfig) =>
+    post<{ ok: boolean; running: boolean; needs_restart?: boolean }>(`/tls/acme`, cfg),
+  tlsCancelACME: () => post<{ ok: boolean }>(`/tls/acme/cancel`, {}),
+  tlsRestart: () => post<{ ok: boolean; restarting: boolean }>(`/tls/restart`, {}),
+  downloadTLSCA: async () => {
+    const r = await fetch(`/api/tls/ca.pem`, { credentials: "same-origin" });
+    if (!r.ok) throw new Error(`下载 CA 失败: ${r.status}`);
+    triggerBlobDownload(await r.blob(), "kaiyang-ca.pem");
+  },
   // Run a real "test" search with the given (or saved) config to verify it works.
   testWebSearch: (patch: {
     web_search_backend?: string;
