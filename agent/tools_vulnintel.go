@@ -21,6 +21,7 @@ import (
 
 	actool "github.com/Autumn-27/norma/tool"
 
+	"github.com/3169417664/kaiyang/resource"
 	"github.com/3169417664/kaiyang/selfupdate"
 	"github.com/3169417664/kaiyang/vulnintel"
 )
@@ -357,6 +358,9 @@ func (t *ToolSet) scanWithNuclei() actool.CoreTool {
 				Severity:     a.Severity,
 				TimeoutTotal: 10 * time.Minute,
 				Proxy:        t.egressProxy,
+				// 资源自适应（默认关闭）：容量小按计划降速；未启用时为 0，不添加
+				// -rate-limit，命令与升级前一致。150 是 nuclei 的常见默认量级。
+				RateLimit: resource.NucleiRateLimit(150),
 			})
 			if err != nil {
 				return actool.Errorf("组装扫描命令失败: " + err.Error()), nil

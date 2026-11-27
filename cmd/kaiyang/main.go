@@ -13,11 +13,13 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/3169417664/kaiyang/agent"
 	"github.com/3169417664/kaiyang/config"
+	"github.com/3169417664/kaiyang/resource"
 	"github.com/3169417664/kaiyang/selfupdate"
 	"github.com/3169417664/kaiyang/server"
 	"github.com/3169417664/kaiyang/traffic"
@@ -69,6 +71,17 @@ func run() int {
 	// capture backend logs into the in-memory sink (still to stderr) so the /logs
 	// page can show a live log stream. Do this first, to catch startup logs too.
 	server.StartLogCapture()
+
+	// 资源自适应：启动早期只做只读容量探测（CPU/内存/负载/cgroup/磁盘），装上的
+	// 是中性计划——不改 worker/作业/扫描/Go 运行时。设置页开启后 server 会按库
+	// 里的设置重新推导并应用；探测失败只降级对应维度，不阻断启动。
+	resource.Init(*dataDir)
+	c, _, _ := resource.Snapshot()
+	log.Printf("[resource] 容量: CPU=%.2f 核 内存=%dMB 可用=%dMB 磁盘剩余=%dMB 负载=%.2f cgroup_v2=%v 容器=%v",
+		c.CPUCores, c.MemTotal>>20, c.MemAvailable>>20, c.DiskFree>>20, c.Load1, c.CgroupV2, c.InContainer)
+	if len(c.Warnings) > 0 {
+		log.Printf("[resource] 探测降级（不影响启动）: %s", strings.Join(c.Warnings, "；"))
+	}
 
 	// Self-update bootstrap: swap in a staged binary, or count a post-swap boot
 	// attempt and roll back if the new build keeps dying. Must run before we open

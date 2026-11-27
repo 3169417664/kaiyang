@@ -54,6 +54,13 @@ type Server struct {
 	dataDir  string       // browsable workspace root
 	jwtKey   atomic.Value // HS256 signing key ([]byte); replaceable to revoke sessions
 
+	// baseGOMAXPROCS 是进程启动时 Go 运行时的 P 数（Go 1.25+ 默认按 cgroup
+	// 配额计算）。关闭资源自适应时恢复到它，而不是硬写 runtime.NumCPU。
+	baseGOMAXPROCS int
+	// baseMemLimit 是进程启动时的 Go 堆上限（含 GOMEMLIMIT 环境变量）。关闭
+	// 资源自适应时恢复它，不能一律写成 MaxInt64——那会悄悄吃掉用户的 GOMEMLIMIT。
+	baseMemLimit int64
+
 	// loginLimiter 是 IP + 账号双维度登录失败限流器（进程内，单实例）。
 	loginLimiter *loginLimiter
 
@@ -181,6 +188,9 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		provByProfile:  map[int64]*provEntry{}, llmHealth: newLLMHealthRegistry(m.pg),
 		taskAgents: map[string]*taskAgentBundle{}, archiveWake: make(chan struct{}, 1)}
 	s.jwtKey.Store(key)
+	// 资源自适应在设置页开启时可能修改 GOMAXPROCS/GOMEMLIMIT；先记下进程
+	// 启动值（Go 1.25+ 默认按 cgroup 配额算），关闭时才能原样恢复。
+	s.captureBaseRuntime()
 	authSessionTestSink = s.m.pg
 	s.m.pg.EnsureKnowledgeVectorSchema()
 	if err := upgradeLegacyAssetAuthCredentials(s.m.pg); err != nil {
@@ -316,6 +326,9 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 	} else {
 		log.Printf("[engine] no LLM provider configured — engine idle until set via /api/llm or env")
 	}
+	// 资源自适应：读到数据库后按设置生成计划（默认关闭 = 只探测、不改变任何
+	// 运行时行为）。放在恢复任务运行时之前，保证恢复的任务看到的是最终 plan。
+	s.applyResourcePlan()
 	s.restoreTaskRuntimes()
 	go s.reconcileConcurrency()
 	s.startTaskArchiveWorker()
@@ -323,6 +336,8 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 	// 主服务写不进去，只能由它自己换装——这里只负责发现版本不一致并通知。
 	s.StartHostdReconcile()
 	s.wireInterceptReviewer() // LLM 兜底审批:未命中拦截规则的命令交给模型判定
+	// 每小时重算一次，跟上扩容/容器限额调整；只重算计划，不写系统配置。
+	go s.resourceLoop(ctx)
 	return s
 }
 
@@ -941,6 +956,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/llm/records/{id}", s.pgGetLLMRecord)
 	mux.HandleFunc("GET /api/settings", s.getSettings)
 	mux.HandleFunc("PUT /api/settings", s.putSettings)
+	// 资源自适应（v0.4.123，默认关闭）：容量探测、计划查看与手工重算。
+	mux.HandleFunc("GET /api/resource", s.resourceGet)
+	mux.HandleFunc("PUT /api/resource", s.resourcePut)
+	mux.HandleFunc("POST /api/resource/retune", s.resourceRetune)
 	// 漏洞 IM 推送。渠道是「多实例 + 各自过滤规则」的资源，因此独立成一组
 	// REST 接口，而不是塞进扁平的 /api/settings 键值里。
 	mux.HandleFunc("GET /api/notify/meta", s.notifyMeta)
