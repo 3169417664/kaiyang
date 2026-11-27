@@ -135,7 +135,7 @@ func (s *Server) recoverTaskFileStaging() {
 }
 
 func (s *Server) runOneCleanupJob(parent context.Context) bool {
-	job, err := s.m.pg.ClaimCleanupJob(parent, cleanupJobGrace)
+	job, err := s.m.pg.ClaimCleanupJobExemptNonTraffic(parent, cleanupJobGrace)
 	if err != nil {
 		log.Printf("[cleanup] 领取作业失败：%v", err)
 		return false

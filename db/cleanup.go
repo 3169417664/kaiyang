@@ -109,6 +109,17 @@ ON CONFLICT DO NOTHING`, task, kind, string(raw))
 // are touched, so a concurrent task that starts on the same host is seen by the
 // ownership re-check rather than racing it.
 func (d *DB) ClaimCleanupJob(ctx context.Context, minAge time.Duration) (*CleanupJob, error) {
+	return d.claimCleanupJob(ctx, minAge, false)
+}
+
+// ClaimCleanupJobExemptNonTraffic is used by the background worker: traffic
+// deletion keeps the ownership grace window, while llm/files cleanup is safe to
+// run immediately (their payload is the task id/stage dir, not a host list).
+func (d *DB) ClaimCleanupJobExemptNonTraffic(ctx context.Context, minAge time.Duration) (*CleanupJob, error) {
+	return d.claimCleanupJob(ctx, minAge, true)
+}
+
+func (d *DB) claimCleanupJob(ctx context.Context, minAge time.Duration, exemptNonTraffic bool) (*CleanupJob, error) {
 	if minAge < 0 {
 		minAge = 0
 	}
@@ -124,7 +135,7 @@ func (d *DB) ClaimCleanupJob(ctx context.Context, minAge time.Duration) (*Cleanu
 WITH next AS (
   SELECT id FROM cleanup_jobs
   WHERE state='pending' AND run_after <= now()
-    AND (kind <> 'traffic' OR created_at <= now() - $1::interval)
+    AND (created_at <= now() - $1::interval OR ($2 AND kind <> 'traffic'))
   ORDER BY id
   LIMIT 1
   FOR UPDATE SKIP LOCKED
@@ -134,7 +145,7 @@ SET state='running', attempts=attempts+1, updated_at=now()
 FROM next
 WHERE j.id=next.id
 RETURNING j.id, j.task_id, j.kind, j.payload::text, j.state, j.attempts,
-          j.total, j.done, j.last_error, j.run_after, j.created_at, j.updated_at`, ageInterval).
+          j.total, j.done, j.last_error, j.run_after, j.created_at, j.updated_at`, ageInterval, exemptNonTraffic).
 		Scan(&job.ID, &taskID, &job.Kind, &job.Payload, &job.State, &job.Attempts,
 			&job.Total, &job.Done, &job.LastError, &job.RunAfter, &job.CreatedAt, &job.UpdatedAt)
 	if err == sql.ErrNoRows {
