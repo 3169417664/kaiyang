@@ -30,6 +30,7 @@ import (
 	"github.com/3169417664/kaiyang/llmpool"
 	"github.com/3169417664/kaiyang/llmrec"
 	"github.com/3169417664/kaiyang/report"
+	"github.com/3169417664/kaiyang/tlsmgr"
 	"github.com/3169417664/kaiyang/traffic"
 	"github.com/3169417664/kaiyang/vault"
 	"github.com/Autumn-27/norma/llm"
@@ -53,6 +54,21 @@ type Server struct {
 	keyDir   string       // directory holding jwt.key (next to the executable)
 	dataDir  string       // browsable workspace root
 	jwtKey   atomic.Value // HS256 signing key ([]byte); replaceable to revoke sessions
+
+	// baseGOMAXPROCS 是进程启动时 Go 运行时的 P 数（Go 1.25+ 默认按 cgroup
+	// 配额计算）。关闭资源自适应时恢复到它，而不是硬写 runtime.NumCPU。
+	baseGOMAXPROCS int
+	// baseMemLimit 是进程启动时的 Go 堆上限（含 GOMEMLIMIT 环境变量）。关闭
+	// 资源自适应时恢复它，不能一律写成 MaxInt64——那会悄悄吃掉用户的 GOMEMLIMIT。
+	baseMemLimit int64
+
+	// 内置 HTTPS（默认为 off）：证书管理器、设置持久化与运行态。
+	tlsMgr         *tlsmgr.Manager
+	tlsActive      atomic.Bool
+	tlsRuntimeAddr atomic.Value // string：当前进程实际监听的地址
+	tlsAddrSaved   atomic.Bool  // 设置表里是否有 tls_https_addr（有则优先于 -addr）
+	tlsMu          sync.Mutex
+	tlsCancel      context.CancelFunc
 
 	// loginLimiter 是 IP + 账号双维度登录失败限流器（进程内，单实例）。
 	loginLimiter *loginLimiter
@@ -185,6 +201,11 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		provByProfile:  map[int64]*provEntry{}, llmHealth: newLLMHealthRegistry(m.pg),
 		taskAgents: map[string]*taskAgentBundle{}, archiveWake: make(chan struct{}, 1)}
 	s.jwtKey.Store(key)
+	// 资源自适应在设置页开启时可能修改 GOMAXPROCS/GOMEMLIMIT；先记下进程
+	// 启动值（Go 1.25+ 默认按 cgroup 配额算），关闭时才能原样恢复。
+	s.captureBaseRuntime()
+	// 证书管理器必须早于路由注册：设置页与监听都依赖它。失败只记录，不阻塞启动。
+	s.initTLS()
 	authSessionTestSink = s.m.pg
 	s.m.pg.EnsureKnowledgeVectorSchema()
 	if err := upgradeLegacyAssetAuthCredentials(s.m.pg); err != nil {
@@ -322,6 +343,9 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 	} else {
 		log.Printf("[engine] no LLM provider configured — engine idle until set via /api/llm or env")
 	}
+	// 资源自适应：读到数据库后按设置生成计划（默认关闭 = 只探测、不改变任何
+	// 运行时行为）。放在恢复任务运行时之前，保证恢复的任务看到的是最终 plan。
+	s.applyResourcePlan()
 	s.restoreTaskRuntimes()
 	go s.reconcileConcurrency()
 	s.startTaskArchiveWorker()
@@ -329,6 +353,8 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 	// 主服务写不进去，只能由它自己换装——这里只负责发现版本不一致并通知。
 	s.StartHostdReconcile()
 	s.wireInterceptReviewer() // LLM 兜底审批:未命中拦截规则的命令交给模型判定
+	// 每小时重算一次，跟上扩容/容器限额调整；只重算计划，不写系统配置。
+	go s.resourceLoop(ctx)
 	return s
 }
 
@@ -960,6 +986,19 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/llm/records/{id}", s.pgGetLLMRecord)
 	mux.HandleFunc("GET /api/settings", s.getSettings)
 	mux.HandleFunc("PUT /api/settings", s.putSettings)
+	// 资源自适应（v0.4.123，默认关闭）：容量探测、计划查看与手工重算。
+	mux.HandleFunc("GET /api/resource", s.resourceGet)
+	mux.HandleFunc("PUT /api/resource", s.resourcePut)
+	mux.HandleFunc("POST /api/resource/retune", s.resourceRetune)
+	// 内置 HTTPS / 证书管理（v0.4.123，默认 off）。私钥永不出 API。
+	mux.HandleFunc("GET /api/tls/status", s.tlsStatus)
+	mux.HandleFunc("PUT /api/tls/settings", s.tlsSaveSettings)
+	mux.HandleFunc("POST /api/tls/import", s.tlsImport)
+	mux.HandleFunc("POST /api/tls/selfsigned", s.tlsSelfSigned)
+	mux.HandleFunc("POST /api/tls/acme", s.tlsACMECreate)
+	mux.HandleFunc("POST /api/tls/acme/cancel", s.tlsACMECancel)
+	mux.HandleFunc("GET /api/tls/ca.pem", s.tlsCA)
+	mux.HandleFunc("POST /api/tls/restart", s.tlsRestart)
 	// 漏洞 IM 推送。渠道是「多实例 + 各自过滤规则」的资源，因此独立成一组
 	// REST 接口，而不是塞进扁平的 /api/settings 键值里。
 	mux.HandleFunc("GET /api/notify/meta", s.notifyMeta)
@@ -4844,6 +4883,11 @@ func securityHeaders(next http.Handler) http.Handler {
 		h.Set("X-Frame-Options", "DENY")
 		h.Set("Referrer-Policy", "no-referrer")
 		h.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+		// HSTS 只在 TLS 终止（直连 TLS 或反代声明 https）且设置页开启时下发：
+		// 自签证书默认关闭，否则浏览器会在用户跳过证书告警后仍强制 HTTPS。
+		if tlsHSTS.Load() && (r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")) {
+			h.Set("Strict-Transport-Security", "max-age=15552000; includeSubDomains")
+		}
 		if strings.HasPrefix(r.URL.Path, "/api/") {
 			// 认证响应与业务数据一律不落缓存/代理日志快照。
 			h.Set("Cache-Control", "no-store")

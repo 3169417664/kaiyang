@@ -105,7 +105,9 @@ func permissionForRequest(method, fullPath string) (string, bool) {
 		return crudPerm(method, "hostenv"), true
 	case strings.HasPrefix(p, "/listeners"), strings.HasPrefix(p, "/c2"):
 		return crudPerm(method, "c2"), true
-	case strings.HasPrefix(p, "/settings"):
+	case strings.HasPrefix(p, "/settings"), strings.HasPrefix(p, "/resource"),
+		strings.HasPrefix(p, "/tls"):
+		// 资源计划与 TLS/证书都属于管理面：读写都归 config 权限（默认 admin）。
 		return crudPerm(method, "config"), true
 	case strings.HasPrefix(p, "/cleanup"):
 		// 删除后清理队列是运维控制面：读列表可给 config:read，重试/消费仅 admin。
