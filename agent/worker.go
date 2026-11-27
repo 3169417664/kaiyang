@@ -102,6 +102,8 @@ type Worker struct {
 	maxTokensFn func() int
 	// taskPromptOverride 是任务级提示词快照（最高优先级）。
 	taskPromptOverride string
+	// profilePrompt 是 LLM 配置级独立提示词（nil = 不注入）。
+	profilePrompt func() ProfilePrompt
 	// reviewEnabledFn 返回任务是否开启意图审核（每轮读取）。
 	reviewEnabledFn func() bool
 	// agentKey 用于提示词覆盖链与技能/MCP 装配；默认 worker，自定义执行器改为其 key。
@@ -180,6 +182,17 @@ func (w *Worker) SetProgramProfile(profile *db.ProgramProfile) { w.programProfil
 
 // SetTaskPromptOverride 注入任务级提示词快照。
 func (w *Worker) SetTaskPromptOverride(body string) { w.taskPromptOverride = body }
+
+// SetProfilePromptResolver wires the per-run LLM-profile overlay. nil = no
+// overlay. Read on every run so a profile prompt edit takes effect next run.
+func (w *Worker) SetProfilePromptResolver(fn func() ProfilePrompt) { w.profilePrompt = fn }
+
+func (w *Worker) promptOverlay() ProfilePrompt {
+	if w.profilePrompt == nil {
+		return ProfilePrompt{}
+	}
+	return w.profilePrompt()
+}
 
 // SetReviewEnabled 注入任务级审核开关（每轮读取）。
 func (w *Worker) SetReviewEnabled(fn func() bool) { w.reviewEnabledFn = fn }
@@ -420,6 +433,10 @@ func workerEgressBlock(proxyAddr string) string {
 }
 
 func workerSystem(agentKey, proxyAddr, caCert, dataDir, runDir, taskOverride string) string {
+	return workerSystemWith(agentKey, proxyAddr, caCert, dataDir, runDir, taskOverride, ProfilePrompt{})
+}
+
+func workerSystemWith(agentKey, proxyAddr, caCert, dataDir, runDir, taskOverride string, pp ProfilePrompt) string {
 	if strings.TrimSpace(agentKey) == "" {
 		agentKey = "worker"
 	}
@@ -429,7 +446,7 @@ func workerSystem(agentKey, proxyAddr, caCert, dataDir, runDir, taskOverride str
 			def = b
 		}
 	}
-	body := renderSystemWithOverride(agentKey, def, WorkerVars{ProxyAddr: proxyAddr, DataDir: dataDir, Now: nowStr()}, taskOverride)
+	body := renderSystemWithOverrideProfile(agentKey, def, WorkerVars{ProxyAddr: proxyAddr, DataDir: dataDir, Now: nowStr()}, taskOverride, pp)
 	// caCert is present only when the recording MITM is on, which is exactly when
 	// the traffic_* tools are registered — so it gates the traffic-tool note.
 	// Optional finding guidance is added for every role after tool resolution.
@@ -665,7 +682,7 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	// 血缘、意图 token 台账、coverage、related_tasks 等）不进 worker 视图，省掉每次
 	// 启动的重建计算与注入前缀。worker 只需要「别人发现了什么」做去重与联想。
 	overview := renderWorkerGraphOverview(tsx.workerOverviewData())
-	sysBody := workerSystem(w.agentKey, w.proxyAddr, w.proxyCACert, w.workDir, runDir, w.taskPromptOverride)
+	sysBody := workerSystemWith(w.agentKey, w.proxyAddr, w.proxyCACert, w.workDir, runDir, w.taskPromptOverride, w.promptOverlay())
 	if w.wantConstraints() {
 		sysBody += constraintBlock(ts) // 操作约束(若有)注入系统提示,worker 执行时严格遵守
 	}

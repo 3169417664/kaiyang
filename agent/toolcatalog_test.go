@@ -37,6 +37,22 @@ func TestBuiltinToolSeeds(t *testing.T) {
 	if ts, ok := byKey["add_task_scope"]; !ok || len(ts.Agents) == 0 {
 		t.Errorf("add_task_scope not seeded / has no agent binding: %v", ts.Agents)
 	}
+	// miniapp_audit (v0.4.99) must be seeded for all execution/planning agents.
+	ma, ok := byKey["miniapp_audit"]
+	if !ok {
+		t.Fatal("miniapp_audit not seeded")
+	}
+	for _, want := range []string{"mainagent", "planner", "worker", "pentest"} {
+		found := false
+		for _, a := range ma.Agents {
+			if a == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("miniapp_audit agents = %v, want to include %s", ma.Agents, want)
+		}
+	}
 	// SDK generic tools (incl. sleep, now part of DefaultTools) are deliberately NOT
 	// seeded — every agent owns them; they flow through ToolResolve untouched.
 	for _, k := range []string{"Bash", "Read", "Write", "Edit", "Grep", "sleep"} {

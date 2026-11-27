@@ -4,6 +4,15 @@
 
 ## [Unreleased]
 
+### LLM 配置与前端 / 小程序（同步上游 v0.4.99–v0.4.121）
+
+- **LLM 配置独立提示词**：`prompt/prompt_mode/prompt_apply_inherited`，prepend/append/replace，保留技能索引与代码硬尾。
+- **Agent × LLM 思考强度覆盖**：`agent_profile_effort_overrides` + GET/PUT/DELETE API，override→profile→未设置。
+- **LLM 路由只读视图**：`GET /api/agents/{key}/llm-route`，不返回密钥。
+- **前端**：资源自调优、HTTPS/证书、任务预算、流量留存、工具可见性、bench 说明、清理队列横幅、多角色凭据编辑弹窗、LLM 独立提示词/effort 编辑。
+- **微信小程序渗透**：`mini-program` 技能（安全解包/质量门禁/13 篇参考）、`miniapp_audit` 工具、Playbook v2、KillWxapkg hosttool、`save_evidence` 任务根相对路径。
+
+
 ### 运维与协作（同步上游 v0.4.112–v0.4.123）
 
 - **流量留存治理**：`traffic_mode=off|evidence|full`、保留天数、evidence 窗口/容量、

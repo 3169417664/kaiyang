@@ -45,6 +45,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
 import type { LLMPoolMember, LLMPoolStatus, LLMProfile, LLMRetryOverride } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -82,6 +83,14 @@ const EFFORT_LEVELS: { value: string; label: string }[] = [
   { value: "high", label: "high" },
   { value: "xhigh", label: "xhigh" },
   { value: "max", label: "max" },
+];
+// 独立提示词注入方式。NONE ↔ "" 只在「未选择」时成立；文本非空且未选时，后端
+// 默认按 prepend 处理（保存路径的三态归一）。
+const PROMPT_MODES: { value: string; label: string }[] = [
+  { value: NONE, label: "自动（默认前置）" },
+  { value: "prepend", label: "前置（正文之前）" },
+  { value: "append", label: "追加（正文与技能索引之后）" },
+  { value: "replace", label: "替换正文（保留技能索引与硬尾）" },
 ];
 
 // LLM 请求 UA 的常用模板。选模板只是把完整 UA 填进输入框，之后仍可继续手改。
@@ -449,6 +458,9 @@ function ProfileSheet({
   const [maxTokensField, setMaxTokensField] = React.useState(NONE); // 上限用哪个字段名;NONE=max_tokens
   const [sessionHeaderKey, setSessionHeaderKey] = React.useState(""); // 自定义会话头名;空=不发送
   const [userAgent, setUserAgent] = React.useState(""); // LLM 请求 UA;空=保持 SDK/Go 默认
+  const [prompt, setPrompt] = React.useState(""); // 独立提示词正文;空=未配置
+  const [promptMode, setPromptMode] = React.useState(NONE); // prepend|append|replace
+  const [promptApplyInherited, setPromptApplyInherited] = React.useState(false); // 任务链/全局选中时也注入
   const [retry, setRetry] = React.useState<LLMRetryOverride>(ZERO_OVERRIDE); // 本配置的重试覆盖;全 0=跟随全局
   const [testing, setTesting] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
@@ -477,6 +489,9 @@ function ProfileSheet({
     setMaxTokensField(fromStore(profile?.max_tokens_field));
     setSessionHeaderKey(profile?.session_header_key ?? "");
     setUserAgent(profile?.user_agent ?? "");
+    setPrompt(profile?.prompt ?? "");
+    setPromptMode(fromStore(profile?.prompt_mode));
+    setPromptApplyInherited(profile?.prompt_apply_inherited ?? false);
     setRetry(profile?.retry ?? ZERO_OVERRIDE);
     setApiKey("");
     setKeyHint(profile?.api_key_hint ?? "");
@@ -570,6 +585,9 @@ function ProfileSheet({
         max_tokens_field: format === "openai" ? toStore(maxTokensField) : "",
         session_header_key: sessionHeaderKey.trim(),
         user_agent: userAgent.trim(),
+        prompt,
+        prompt_mode: prompt.trim() ? toStore(promptMode) : "",
+        prompt_apply_inherited: promptApplyInherited,
         retry,
       });
       if (isNew) toast.success(`已新建：${name.trim()}（在卡片上「设为激活」以启用）`);
@@ -969,6 +987,54 @@ function ProfileSheet({
                 </SelectContent>
               </Select>
             </div>
+          </div>
+
+          <div className="grid gap-3 rounded-lg border p-3">
+            <div className="grid gap-0.5">
+              <Label className="text-sm">独立提示词 · prompt</Label>
+              <p className="text-muted-foreground text-xs">
+                纯文本，不执行模板变量。Agent 显式绑定本配置时总会注入；任务链/全局选路选中时，
+                只有打开下方「沿用继承」才注入。服务端会保留技能索引与代码硬尾（审核 / 红队 / 产物输出规约）。
+              </p>
+            </div>
+            <Textarea
+              value={prompt}
+              onChange={(e) => setPrompt(e.target.value)}
+              rows={10}
+              maxLength={8000}
+              placeholder="例如：本配置只做只读侦察，禁止发起任何写操作或漏洞利用。"
+              className="font-mono text-xs"
+            />
+            <div className="flex items-center justify-between gap-4">
+              <div className="grid gap-0.5">
+                <Label className="text-sm">注入方式</Label>
+                <p className="text-muted-foreground text-xs">
+                  前置=正文与技能索引之前；追加=正文与技能索引之后、代码硬尾之前；替换=替换正文但保留技能索引与硬尾。
+                </p>
+              </div>
+              <Select value={promptMode} onValueChange={setPromptMode} disabled={!prompt.trim()}>
+                <SelectTrigger className="w-56 shrink-0">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {PROMPT_MODES.map((o) => (
+                    <SelectItem key={o.value} value={o.value}>
+                      {o.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="flex items-center justify-between gap-4 border-t pt-3">
+              <div className="grid gap-0.5">
+                <Label className="text-sm">任务链 / 全局选中时也注入</Label>
+                <p className="text-muted-foreground text-xs">
+                  关闭时，只有 Agent 显式绑定或会话固定本配置才注入；打开后，任务配置链或全局激活选中本配置时同样注入。
+                </p>
+              </div>
+              <Switch checked={promptApplyInherited} onCheckedChange={setPromptApplyInherited} />
+            </div>
+            <p className="text-muted-foreground text-xs">{prompt.length} / 8000</p>
           </div>
 
           <ProfileRetryFields value={retry} onChange={setRetry} />

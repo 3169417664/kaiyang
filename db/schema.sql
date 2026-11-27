@@ -2037,3 +2037,45 @@ CREATE INDEX IF NOT EXISTS idx_cleanup_jobs_task ON cleanup_jobs(task_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_cleanup_jobs_active
   ON cleanup_jobs(task_id, kind)
   WHERE state IN ('pending','running') AND task_id IS NOT NULL;
+
+-- ── LLM 配置级独立提示词（上游 v0.4.121）───────────────────────────────
+-- 本配置被 Agent 显式绑定（或开启「继承时也生效」后实际被选中）时，作为一段
+-- 纯文本附加到该 Agent 的 system prompt。'' = 未配置，历史行为逐字节不变。
+-- 纯文本：不做 Go 模板渲染，{{.Var}} 原样保留。
+ALTER TABLE llm_profiles ADD COLUMN IF NOT EXISTS prompt TEXT NOT NULL DEFAULT '';
+-- 装配位置：'' = 未配置（必须与 prompt='' 同时出现）；prepend/append/replace 三选。
+--   prepend = 正文最前；append = 正文+技能索引之后、代码硬尾巴之前；
+--   replace = 替换正文（技能索引与代码硬尾巴仍保留）。
+ALTER TABLE llm_profiles ADD COLUMN IF NOT EXISTS prompt_mode TEXT NOT NULL DEFAULT '';
+-- 继承时也生效：false（默认）= 仅当本配置被 agents.llm_profile_id 显式绑定时注入；
+-- true = 当本配置作为任务链/全局默认被实际选中时也注入（会话 pin 始终视为显式）。
+ALTER TABLE llm_profiles ADD COLUMN IF NOT EXISTS prompt_apply_inherited BOOLEAN NOT NULL DEFAULT false;
+-- 先删再建，保证每次启动幂等。
+ALTER TABLE llm_profiles DROP CONSTRAINT IF EXISTS llm_profiles_prompt_mode_check;
+ALTER TABLE llm_profiles ADD  CONSTRAINT llm_profiles_prompt_mode_check
+    CHECK (prompt_mode IN ('','prepend','append','replace'));
+ALTER TABLE llm_profiles DROP CONSTRAINT IF EXISTS llm_profiles_prompt_len_check;
+ALTER TABLE llm_profiles ADD  CONSTRAINT llm_profiles_prompt_len_check
+    CHECK (char_length(prompt) <= 8000);
+-- 二值等价：有正文必有模式，无正文必无模式，杜绝「存了字却不生效」的死状态。
+ALTER TABLE llm_profiles DROP CONSTRAINT IF EXISTS llm_profiles_prompt_pair_check;
+ALTER TABLE llm_profiles ADD  CONSTRAINT llm_profiles_prompt_pair_check
+    CHECK ((prompt = '') = (prompt_mode = ''));
+
+-- ── Agent × LLM 配置的 reasoning effort 覆盖（上游 v0.4.121）─────────────
+-- effort 原本只属于 llm_profiles.reasoning_effort：同一个 Agent 想换个强度就得
+-- 复制整份配置。本表把「强度」从「配置」里解耦，(agent_key, profile_id) 命中时
+-- 优先于该配置自身的 reasoning_effort；空值不落库（清除覆盖 = 删除该行）。
+CREATE TABLE IF NOT EXISTS agent_profile_effort_overrides (
+    agent_key        TEXT NOT NULL REFERENCES agents(key) ON DELETE CASCADE,
+    profile_id       BIGINT NOT NULL REFERENCES llm_profiles(id) ON DELETE CASCADE,
+    reasoning_effort TEXT NOT NULL,
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (agent_key, profile_id)
+);
+CREATE INDEX IF NOT EXISTS idx_apeo_profile ON agent_profile_effort_overrides(profile_id);
+ALTER TABLE agent_profile_effort_overrides
+    DROP CONSTRAINT IF EXISTS agent_profile_effort_overrides_effort_check;
+ALTER TABLE agent_profile_effort_overrides
+    ADD CONSTRAINT agent_profile_effort_overrides_effort_check
+    CHECK (reasoning_effort IN ('low','medium','high','xhigh','max'));

@@ -129,7 +129,7 @@ func DecomposeGoalsWithProvider(ctx context.Context, prov llm.Provider, dataDir,
 	// Description rides in the user message (same channel as the goal), NOT via the
 	// {{.EngagementDescription}} template var — else a prompt that references the var
 	// would inject the description twice. System prompt stays pure static instructions.
-	sys := renderSystem("goals", goalsDefaultTmpl, GoalsVars{DataDir: dataDir, Now: nowStr()})
+	sys := renderSystemWith("goals", goalsDefaultTmpl, GoalsVars{DataDir: dataDir, Now: nowStr()}, ProfilePromptFrom(ctx))
 	// 执行模式代码尾巴：目标文本明确「只验证漏洞、不需要 Shell」时，Goal 不得
 	// 再把 getshell/立足点写成完成条件。识别逻辑在 execution_mode.go，老库提示词
 	// 不需要重复这段契约。

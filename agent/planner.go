@@ -47,6 +47,7 @@ type Planner struct {
 	maxTokensFn          func() int                             // resolver: per-reply output cap (nil/0 = send no cap)
 	compactor            *Compactor                             // cold-node compaction (§7); nil = disabled
 	taskPromptOverride   string                                 // 任务级提示词快照（最高优先级）
+	profilePrompt        func() ProfilePrompt                   // LLM 配置级独立提示词（nil = 不注入）
 	reviewEnabledFn      func() bool                            // 任务是否开启意图审核
 	programProfile       *db.ProgramProfile                     // SRC/众测 profile（nil = 不渲染）
 	taskAuthBlock        string                                 // 多角色凭据摘要（#24，无明文）
@@ -61,6 +62,17 @@ type Planner struct {
 
 func NewPlanner(prov llm.Provider, model, workDir string, tx *transcript.Store, window, maxTurns int) *Planner {
 	return &Planner{prov: prov, model: model, workDir: workDir, tx: tx, window: window, maxTurns: maxTurns, todos: map[int64]*actool.TodoStore{}}
+}
+
+// SetProfilePromptResolver wires the per-run LLM-profile overlay. nil = no
+// overlay. Read on every round so a profile prompt edit takes effect next run.
+func (p *Planner) SetProfilePromptResolver(fn func() ProfilePrompt) { p.profilePrompt = fn }
+
+func (p *Planner) promptOverlay() ProfilePrompt {
+	if p.profilePrompt == nil {
+		return ProfilePrompt{}
+	}
+	return p.profilePrompt()
 }
 
 func (p *Planner) SetScopeFlags(scopeGuard, scopeInheritWrites, crossTaskNotifyDedup bool) {
@@ -449,13 +461,17 @@ const plannerDefaultTmpl = `你是一个网络安全平台授权渗透测试系�
 不重复、不硬凑；但目标未达成、又有未覆盖且更深的打法时，该派就派。简洁、聚焦、高效。`
 
 func plannerSystem(goal, dataDir, workDir, taskOverride string) string {
+	return plannerSystemWith(goal, dataDir, workDir, taskOverride, ProfilePrompt{})
+}
+
+func plannerSystemWith(goal, dataDir, workDir, taskOverride string, pp ProfilePrompt) string {
 	def := plannerDefaultTmpl
 	if PlannerTemplateDefault != nil {
 		if b := PlannerTemplateDefault(); strings.TrimSpace(b) != "" {
 			def = b
 		}
 	}
-	body := renderSystemWithOverride("planner", def, PlannerVars{Goal: goal, DataDir: dataDir, Now: nowStr()}, taskOverride)
+	body := renderSystemWithOverrideProfile("planner", def, PlannerVars{Goal: goal, DataDir: dataDir, Now: nowStr()}, taskOverride, pp)
 	// 作业硬尾巴（v0.4.63）：漏洞覆盖矩阵/纵深优先 + 授权边界复核。
 	return body + plannerExecutionModeSpec(goal) + artifactSpec(workDir) + coverageMatrixPlannerGuidance + scopeVerifyPlannerGuidance + execFacePlannerGuidance +
 		engagementFraming + impactOrchestrationGuidance + blackboardPlannerGuidance
@@ -528,7 +544,7 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	// （worker 有注入所以从不报错，问题只在规划者/主 Agent 侧复现）。
 	tsx.SetRunDir(taskDir)
 	ctx = intercept.WithReviewContext(ctx, taskDir, intercept.ReviewBackground{})
-	sysBody := plannerSystem(goal, p.workDir, taskDir, p.taskPromptOverride)
+	sysBody := plannerSystemWith(goal, p.workDir, taskDir, p.taskPromptOverride, p.promptOverlay())
 	// 审核模式：代码级追加，模板/提示词改不掉；工具层还会硬拒绝 add_intent。
 	if p.reviewEnabledFn != nil && p.reviewEnabledFn() {
 		sysBody += "\n\n【审核模式（本任务已开启意图审核）】\n" +

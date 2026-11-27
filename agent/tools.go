@@ -3122,6 +3122,9 @@ func (t *ToolSet) PlannerTools() []actool.CoreTool {
 		t.searchRecentCritical(),
 		// evidence_check（v0.4.71）：规划阶段复核高/危漏洞证据是否足以支撑危害结论。
 		t.evidenceCheck(),
+		// miniapp_audit（v0.4.99）：小程序解包产物目录审计——规划阶段先摸清接口/密钥/
+		// 云环境，再决定是否派发动态验证意图（与 worker/mainagent 同款）。
+		t.miniappAudit(),
 	}
 }
 

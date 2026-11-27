@@ -136,19 +136,22 @@ type Server struct {
 	triggerActive map[string]int
 	triggerCfg    map[string]triggerBehavior
 
-	// profChatAgents caches a per-profile ChatAgent (chat page), keyed by profile id.
-	// Built lazily on first use; invalidated when any profile is saved/activated/deleted
-	// so edits take effect.
+	// profChatAgents caches a per-(agent, profile) ChatAgent (chat page). The agent
+	// key participates because the same profile can run at different reasoning
+	// efforts per agent; the profile-only key would leak one agent's effort into
+	// another's chat. Built lazily on first use; invalidated when any profile is
+	// saved/activated/deleted or an effort override changes.
 	profMu         sync.Mutex
-	profChatAgents map[int64]*agent.ChatAgent // per-profile ChatAgent cache (chat page)
+	profChatAgents map[chatAgentKey]*agent.ChatAgent
 
-	// provByProfile caches ONE provider per LLM profile id so every agent bound or
-	// pinned to the same profile shares a single provider instance — hence one rate
-	// limiter. applyLLM also resolves the persisted global-active profile through this
-	// cache, so global fallback and task chains do not accidentally double the
-	// configured request rate. Cleared on profile edits, then repopulated by active reapply.
+	// provByProfile caches ONE provider per (LLM profile id, effective reasoning
+	// effort) so every agent bound or pinned to the same profile at the same
+	// effort shares a single provider instance — hence one rate limiter. applyLLM
+	// also resolves the persisted global-active profile through this cache, so
+	// global fallback and task chains do not accidentally double the configured
+	// request rate. Cleared on profile edits, then repopulated by active reapply.
 	provCacheMu   sync.Mutex
-	provByProfile map[int64]*provEntry
+	provByProfile map[provKey]*provEntry
 	provCacheGen  uint64
 
 	// llmHealth is the process-wide circuit-breaker state for LLM failover (轮询).
@@ -168,6 +171,21 @@ type Server struct {
 	archiveWake chan struct{}
 	archiveWG   sync.WaitGroup
 	side        *sideQuestionState
+}
+
+// provKey identifies a cached provider: the profile plus the reasoning effort it
+// was built with. Agents sharing both share one provider (and rate limiter) while
+// an agent effort override never mutates another agent's provider.
+type provKey struct {
+	profileID int64
+	effort    string
+}
+
+// chatAgentKey identifies a cached ChatAgent. The agent key participates because
+// reasoning effort is resolved per (agent, profile).
+type chatAgentKey struct {
+	agentKey  string
+	profileID int64
 }
 
 // provEntry is a cached provider + its config for one LLM profile id.
@@ -197,8 +215,8 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 	s := &Server{m: m, engine: NewEngine(m), ctx: ctx, skillDir: skillDir, keyDir: keyDir, dataDir: dataDir, loginLimiter: newLoginLimiter(), chatBusy: map[string]bool{},
 		chatCancel: map[string]context.CancelCauseFunc{}, triggerQ: map[string][]triggeredRun{},
 		triggerActive: map[string]int{}, triggerCfg: map[string]triggerBehavior{},
-		profChatAgents: map[int64]*agent.ChatAgent{},
-		provByProfile:  map[int64]*provEntry{}, llmHealth: newLLMHealthRegistry(m.pg),
+		profChatAgents: map[chatAgentKey]*agent.ChatAgent{},
+		provByProfile:  map[provKey]*provEntry{}, llmHealth: newLLMHealthRegistry(m.pg),
 		taskAgents: map[string]*taskAgentBundle{}, archiveWake: make(chan struct{}, 1)}
 	s.jwtKey.Store(key)
 	// 资源自适应在设置页开启时可能修改 GOMAXPROCS/GOMEMLIMIT；先记下进程
@@ -651,8 +669,19 @@ func (s *Server) effectiveProfileForAgent(agentKey string, pinID *int64) *int64 
 func (s *Server) resolveChatAgent(c *db.Conversation) *agent.ChatAgent {
 	ca := s.chatAgentRef()
 	if eff := s.effectiveProfileForAgent(c.AgentKey, c.LLMProfileID); eff != nil {
-		if pa := s.chatAgentForProfile(*eff); pa != nil {
+		if pa := s.chatAgentForProfile(c.AgentKey, *eff); pa != nil {
 			ca = pa
+		}
+		return ca
+	}
+	// Global fallback: when this agent has an effort override on the globally
+	// active profile, build a per-(agent, profile) chat agent; otherwise the shared
+	// global one is correct.
+	if act, err := s.m.pg.ActiveProfile(); err == nil && act != nil {
+		if _, ok, err := s.m.pg.EffortOverride(c.AgentKey, act.ID); err == nil && ok {
+			if pa := s.chatAgentForProfile(c.AgentKey, act.ID); pa != nil {
+				ca = pa
+			}
 		}
 	}
 	return ca
@@ -673,61 +702,95 @@ func (s *Server) chatUnavailableReason() string {
 	return "LLM 未就绪，无法对话：请检查 系统 → LLM 配置是否有可用且已激活的配置"
 }
 
-// providerForProfile returns a cached provider+cfg for a profile id, so every agent
-// bound/pinned to the same profile shares one provider instance (one rate limiter).
-// ok=false when the profile is missing/invalid → caller falls back to the global pair.
+// providerForProfile returns a cached provider+cfg for a profile id using the
+// profile's own reasoning effort. Used by paths with no agent identity (pin,
+// interception, side questions, compactor) where a per-agent override must not
+// apply. Agent-aware call sites use providerForAgentProfile.
 func (s *Server) providerForProfile(id int64) (llm.Provider, agent.Config, bool) {
+	if s == nil || s.m == nil || s.m.pg == nil {
+		return nil, agent.Config{}, false
+	}
+	p, err := s.m.pg.ProfileByID(id)
+	if err != nil || p == nil {
+		return nil, agent.Config{}, false
+	}
+	return s.providerForProfileEffort(p, p.ReasoningEffort, "")
+}
+
+// providerForAgentProfile resolves the effort this agent should use on this
+// profile (override → profile → unset) and returns the matching cached provider.
+// The override is resolved per call so a failover to another profile re-resolves
+// against the target profile instead of carrying the previous one's value.
+func (s *Server) providerForAgentProfile(agentKey string, id int64) (llm.Provider, agent.Config, bool) {
+	if s == nil || s.m == nil || s.m.pg == nil {
+		return nil, agent.Config{}, false
+	}
+	p, err := s.m.pg.ProfileByID(id)
+	if err != nil || p == nil {
+		return nil, agent.Config{}, false
+	}
+	effort, _ := s.resolveEffort(agentKey, p)
+	return s.providerForProfileEffort(p, effort, agentKey)
+}
+
+// providerForProfileEffort builds (or reuses) one provider for an exact
+// (profile, effective effort) pair. Sharing is keyed on the pair, so agents with
+// identical effective effort still share one rate limiter.
+func (s *Server) providerForProfileEffort(p *db.LLMProfile, effort, agentKey string) (llm.Provider, agent.Config, bool) {
+	key := provKey{profileID: p.ID, effort: effort}
 	s.provCacheMu.Lock()
-	if e := s.provByProfile[id]; e != nil {
+	if e := s.provByProfile[key]; e != nil {
 		s.provCacheMu.Unlock()
 		return e.prov, e.cfg, true
 	}
 	generation := s.provCacheGen
 	s.provCacheMu.Unlock()
-	cfg, ok := s.loadProfileConfig(id)
+	cfg, ok := s.loadProfileConfig(p.ID)
 	if !ok {
 		return nil, agent.Config{}, false
 	}
+	cfg = applyEffortToConfig(cfg, effort)
 	prov, err := cfg.NewProvider()
 	if err != nil {
-		log.Printf("[engine] build provider for LLM profile %d failed: %v", id, err)
+		log.Printf("[engine] build provider for LLM profile %d failed: %v", p.ID, err)
 		return nil, agent.Config{}, false
 	}
-	// Wrap with recorder, tagged with this profile's name.
-	if p, _ := s.m.pg.ProfileByID(id); p != nil {
-		prov = llmrec.Wrap(prov, s.m.PG(), cfg.Model, p.Name, cfg.ThinkingType, cfg.ReasoningEffort, s.m.LLMRecordEnabled)
-		prov = bindSideProvider(prov, cfg, id, p.Name)
-	}
+	// Wrap with recorder, tagged with the effective effort so the LLM record shows
+	// what was actually sent (the profile value or an agent override).
+	prov = llmrec.Wrap(prov, s.m.PG(), cfg.Model, p.Name, cfg.ThinkingType, cfg.ReasoningEffort, s.m.LLMRecordEnabled)
+	prov = bindSideProvider(prov, cfg, p.ID, p.Name)
 	s.provCacheMu.Lock()
 	if generation != s.provCacheGen {
 		s.provCacheMu.Unlock()
-		return s.providerForProfile(id)
+		return s.providerForProfileEffort(p, effort, agentKey)
 	}
-	if e := s.provByProfile[id]; e != nil { // lost the race → keep the winner
+	if e := s.provByProfile[key]; e != nil { // lost the race → keep the winner
 		prov, cfg = e.prov, e.cfg
 	} else {
-		s.provByProfile[id] = &provEntry{prov: prov, cfg: cfg}
-		log.Printf("[engine] built provider for LLM profile %d (%s / %s)", id, cfg.Provider(), cfg.Model)
+		s.provByProfile[key] = &provEntry{prov: prov, cfg: cfg}
+		log.Printf("[engine] built provider for LLM profile %d (%s / %s, effort=%q)", p.ID, cfg.Provider(), cfg.Model, cfg.ReasoningEffort)
 	}
 	s.provCacheMu.Unlock()
 	return prov, cfg, true
 }
 
-// chatAgentForProfile returns a ChatAgent built from a specific LLM profile, cached
-// per profile id. Returns nil if the profile is missing or has no API key.
-func (s *Server) chatAgentForProfile(id int64) *agent.ChatAgent {
+// chatAgentForProfile returns a ChatAgent built for one (agent, LLM profile)
+// pair, cached under that pair. Returns nil if the profile is missing or has no
+// API key.
+func (s *Server) chatAgentForProfile(agentKey string, id int64) *agent.ChatAgent {
+	key := chatAgentKey{agentKey: agentKey, profileID: id}
 	s.profMu.Lock()
-	cached := s.profChatAgents[id]
+	cached := s.profChatAgents[key]
 	s.profMu.Unlock()
 	if cached != nil {
 		return cached
 	}
-	prov, cfg, ok := s.providerForProfile(id)
+	prov, cfg, ok := s.providerForAgentProfile(agentKey, id)
 	if !ok {
 		return nil
 	}
 	tx := transcript.NewStore(filepath.Join(s.m.dir, "transcripts"))
-	ca := agent.NewChatAgent(s.poolForBinding(id, prov, cfg), cfg.Model, s.m.dir, tx, cfg.CompactionWindow())
+	ca := agent.NewChatAgent(s.poolForBinding(agentKey, id, prov, cfg), cfg.Model, s.m.dir, tx, cfg.CompactionWindow())
 	ca.SetProxy(s.m.ProxyAddr(), s.m.ProxyCACert())
 	ca.SetWebSearch(s.m.WebSearchOpts())
 	ca.SetGuard(s.chatGuard())
@@ -735,10 +798,10 @@ func (s *Server) chatAgentForProfile(id int64) *agent.ChatAgent {
 	ca.SetMaxTokens(maxTokensResolver(cfg))
 	ca.SetNoaEnabled(s.m.NoaCompactionEnabled) // 实验功能:noa 上下文压缩(每 run 读)
 	s.profMu.Lock()
-	if ex := s.profChatAgents[id]; ex != nil { // lost the race → keep the winner
+	if ex := s.profChatAgents[key]; ex != nil { // lost the race → keep the winner
 		ca = ex
 	} else {
-		s.profChatAgents[id] = ca
+		s.profChatAgents[key] = ca
 	}
 	s.profMu.Unlock()
 	return ca
@@ -749,11 +812,11 @@ func (s *Server) chatAgentForProfile(id int64) *agent.ChatAgent {
 // (and re-resolves each agent's bound model) on their next round.
 func (s *Server) invalidateProfileAgents() {
 	s.profMu.Lock()
-	s.profChatAgents = map[int64]*agent.ChatAgent{}
+	s.profChatAgents = map[chatAgentKey]*agent.ChatAgent{}
 	s.profMu.Unlock()
 	s.provCacheMu.Lock()
 	s.provCacheGen++
-	s.provByProfile = map[int64]*provEntry{}
+	s.provByProfile = map[provKey]*provEntry{}
 	s.provCacheMu.Unlock()
 	s.invalidateTaskAgents()
 }
@@ -1127,6 +1190,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/agents/{key}/prompt/preview", s.pgPreviewPrompt)
 	mux.HandleFunc("GET /api/agents/{key}/visibility", s.pgGetAgentVisibility)
 	mux.HandleFunc("PUT /api/agents/{key}/visibility", s.pgSetAgentVisibility)
+	// Agent × LLM：每个 Agent 对单个配置的思考强度覆盖，以及只读选路视图。
+	mux.HandleFunc("GET /api/agents/{key}/llm-effort-overrides", s.pgAgentEffortOverrides)
+	mux.HandleFunc("PUT /api/agents/{key}/llm-effort-overrides/{profile_id}", s.pgSaveAgentEffortOverride)
+	mux.HandleFunc("DELETE /api/agents/{key}/llm-effort-overrides/{profile_id}", s.pgDeleteAgentEffortOverride)
+	mux.HandleFunc("GET /api/agents/{key}/llm-route", s.pgAgentLLMRoute)
 	// 内置工具目录（描述/参数默认值可改、按 agent 绑定；key 与 handler 在代码层）
 	mux.HandleFunc("GET /api/tools", s.pgListTools)
 	mux.HandleFunc("PUT /api/tools/{key}", s.pgUpdateTool)

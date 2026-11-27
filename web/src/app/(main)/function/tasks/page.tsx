@@ -119,6 +119,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { usePermissions } from "@/hooks/use-permissions";
 import { api } from "@/lib/api";
 import { getLocalStorageValue, setLocalStorageValue } from "@/lib/local-storage.client";
 import { type SortDirection, useStoredSortPreference } from "@/lib/sort-preference";
@@ -126,6 +127,7 @@ import type {
   TaskAuthConfigInput,
   AssetInterceptRuleInput,
   ChatAttachment,
+  CleanupJob,
   Company,
   DeleteTaskOptions,
   DeleteTaskResult,
@@ -321,7 +323,90 @@ function compareTasks(left: Task, right: Task, field: TaskSortField, direction: 
   return -compareTaskIDs(left.id, right.id);
 }
 
+const CLEANUP_KIND_LABEL: Record<string, string> = {
+  traffic: "流量索引",
+  llm: "LLM 审计",
+  files: "任务文件",
+};
+
+function cleanupKindLabel(kind: string): string {
+  return CLEANUP_KIND_LABEL[kind] ?? kind;
+}
+
+function cleanupProgress(job: CleanupJob): string {
+  if (job.state === "failed") return "失败";
+  if (job.state === "pending") return "排队中";
+  if (job.total > 0) return `${Math.min(100, Math.round((job.done / job.total) * 100))}%`;
+  return "处理中";
+}
+
+// CleanupBanner 把“任务已经删掉”和“磁盘上的重活还在跑”区分开。
+// 流量清理是刻意异步的；隐藏它会让批量删除看起来像卡死。
+function CleanupBanner({
+  jobs,
+  retrying,
+  canRetry,
+  onRetry,
+}: {
+  jobs: CleanupJob[];
+  retrying: boolean;
+  canRetry: boolean;
+  onRetry: (id: number) => void;
+}) {
+  const active = jobs.filter((job) => job.state === "pending" || job.state === "running");
+  const failed = jobs.filter((job) => job.state === "failed");
+  if (active.length === 0 && failed.length === 0) return null;
+
+  return (
+    <Card className="mx-4 border-primary/30 bg-primary/5 lg:mx-6">
+      <CardContent className="flex flex-col gap-3 p-4">
+        <div className="flex flex-wrap items-center gap-2 text-sm">
+          <Loader2Icon className="size-4 animate-spin text-primary" />
+          <span className="font-medium">
+            {active.length > 0 ? `正在后台清理 ${active.length} 项` : "有清理作业失败"}
+          </span>
+          <span className="text-muted-foreground text-xs">
+            任务已从列表移除；流量、LLM 审计与任务文件正在分批清理，可离开本页。
+          </span>
+        </div>
+        <div className="flex flex-col gap-1.5">
+          {active.slice(0, 6).map((job) => (
+            <div key={job.id} className="flex flex-wrap items-center gap-2 text-xs">
+              <Badge variant="secondary">{cleanupKindLabel(job.kind)}</Badge>
+              {job.task_id != null && <span className="font-mono">#{job.task_id}</span>}
+              <span className="text-muted-foreground tabular-nums">
+                {job.done.toLocaleString()}
+                {job.total > 0 ? ` / ${job.total.toLocaleString()}` : ""} · {cleanupProgress(job)}
+              </span>
+            </div>
+          ))}
+          {active.length > 6 && <span className="text-muted-foreground text-xs">…等 {active.length} 项</span>}
+          {failed.map((job) => (
+            <div key={job.id} className="flex flex-wrap items-center gap-2 text-xs">
+              <Badge variant="destructive">{cleanupKindLabel(job.kind)}</Badge>
+              {job.task_id != null && <span className="font-mono">#{job.task_id}</span>}
+              <span className="max-w-[42rem] truncate text-muted-foreground" title={job.last_error}>
+                {job.last_error || "清理失败"}
+              </span>
+              {canRetry ? (
+                <Button size="sm" variant="outline" disabled={retrying} onClick={() => onRetry(job.id)}>
+                  {retrying ? <Loader2Icon className="size-4 animate-spin" /> : null}
+                  重试
+                </Button>
+              ) : null}
+            </div>
+          ))}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 export default function TasksPage() {
+  const { permissions } = usePermissions();
+  const canRetryCleanup = permissions === null || permissions.has("config:write");
+  const [cleanupJobs, setCleanupJobs] = React.useState<CleanupJob[]>([]);
+  const [retryingCleanup, setRetryingCleanup] = React.useState(false);
   const [activeTab, setActiveTab] = React.useState("current");
   const [tasks, setTasks] = React.useState<Task[]>([]);
   const [categories, setCategories] = React.useState<TaskCategory[]>([]);
@@ -360,6 +445,40 @@ export default function TasksPage() {
     return () => {
       alive = false;
     };
+  }, []);
+
+  // 删除后的流量/LLM/文件清理由服务端队列完成；这里只轮询进行中的作业，
+  // 让用户知道“任务已经消失，但磁盘上的重活还在跑”。
+  React.useEffect(() => {
+    let alive = true;
+    const tick = async () => {
+      try {
+        const res = await api.cleanupJobs(false);
+        if (alive) setCleanupJobs(res.jobs.filter((job) => job.state !== "done"));
+      } catch {
+        // 清理状态是辅助信息，探测失败（含无 config:read 权限的 403）不打扰用户。
+      }
+    };
+    void tick();
+    const timer = window.setInterval(tick, 5000);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
+  }, []);
+
+  const retryCleanup = React.useCallback(async (id: number) => {
+    setRetryingCleanup(true);
+    try {
+      await api.retryCleanupJob(id);
+      toast.success("清理作业已重新排队");
+      const res = await api.cleanupJobs(false);
+      setCleanupJobs(res.jobs.filter((job) => job.state !== "done"));
+    } catch (error) {
+      toast.error(`重试清理失败：${(error as Error).message}`);
+    } finally {
+      setRetryingCleanup(false);
+    }
   }, []);
 
   React.useEffect(() => {
@@ -816,7 +935,16 @@ export default function TasksPage() {
   );
 
   return (
-    <Tabs value={activeTab} onValueChange={setActiveTab} className="gap-4">
+    <>
+      {cleanupJobs.length > 0 && (
+        <CleanupBanner
+          jobs={cleanupJobs}
+          retrying={retryingCleanup}
+          canRetry={canRetryCleanup}
+          onRetry={retryCleanup}
+        />
+      )}
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="gap-4">
       <TabsList className="mx-4 lg:mx-6">
         <TabsTrigger value="current">当前任务</TabsTrigger>
         <TabsTrigger value="archived">已归档</TabsTrigger>
@@ -1084,7 +1212,8 @@ export default function TasksPage() {
       <TabsContent value="archived">
         <TaskArchivesPanel onChanged={load} />
       </TabsContent>
-    </Tabs>
+      </Tabs>
+    </>
   );
 }
 
