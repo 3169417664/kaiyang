@@ -152,8 +152,24 @@ func TestCoreTaskLifecyclePG(t *testing.T) {
 	if deleted, _ := out["findings_deleted"].(float64); deleted != 1 {
 		t.Fatalf("expected one deleted finding, got %v", out)
 	}
-	if deleted, _ := out["llm_records_deleted"].(float64); deleted != 1 {
-		t.Fatalf("expected one deleted LLM record, got %v", out)
+	// 任务删除已改为异步清理队列：同步响应只表示已入队，LLM 行由后台 worker
+	// 分批删除。这里做有界轮询，确认最终一致，而不是要求 0ms 同步删除。
+	if queued, _ := out["cleanup_queued"].(bool); !queued {
+		t.Fatalf("expected cleanup_queued response, got %v", out)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var n int
+		if err := m.pg.QueryRow(`SELECT COUNT(*) FROM llm_records WHERE COALESCE(task_id,'')=$1`, id).Scan(&n); err != nil {
+			t.Fatalf("count llm_records: %v", err)
+		}
+		if n == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("LLM records for task %s still present after async cleanup", id)
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 	if _, err := os.Stat(taskDir); !os.IsNotExist(err) {
 		t.Fatalf("task directory should be deleted, stat err=%v", err)

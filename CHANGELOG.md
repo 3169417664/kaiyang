@@ -4,6 +4,37 @@
 
 ## [Unreleased]
 
+### 运维与协作（同步上游 v0.4.112–v0.4.123）
+
+- **流量留存治理**：`traffic_mode=off|evidence|full`、保留天数、evidence 窗口/容量、
+  `GET/POST /api/traffic/retention`（dry-run/手动/后台 6h）、证据 pin 与保护集。
+- **任务删除异步清理队列**：`cleanup_jobs`，任务删除秒级提交；后台分批清理
+  traffic/llm/files，重启续跑、失败可重试；`GET/POST /api/cleanup/jobs*`。
+- **LLM 审计留存**：`storage_llm_keep_days` / `storage_llm_max_rows` 后台巡检。
+- **多角色测试凭据池**：`task_credentials` CRUD/自检，session_login 按 credential_id
+  服务端解析秘密，401/403 熔断 30 分钟，secret 不回显。
+- **Program Profile**：平台/scope/RPS/时间窗/dry-run/并发限制与 `X-Bug-Bounty`，
+  host allow/deny 与重定向校验。
+- **工具可见性 + BM25 搜索**：`tool_visibility_limit`（默认 0 关闭），核心工具永不隐藏，
+  其余按 BM25 进 deferred，动态 `search_tools`。
+- **工具路由学习**：维度级成功率/错误率统计，worker 提示词按样本量注入。
+- **资源自适应**：opt-in 容量探测/计划/worker/作业/扫描限速/GOMEMLIMIT。
+- **内置 HTTPS/证书**：opt-in `tls_mode`，自签/导入/ACME、同端口 TLS/明文嗅探、
+  HSTS、`/api/tls/*`；默认关闭。
+
+
+### 工具路由与可见性（同步上游 v0.4.114/115/117）
+
+- **工具可见性上限 + BM25 搜索（P2-2）**：默认关闭（`tool_visibility_limit=0`，全量可见）；
+  设为 20–40 后写回/核心工具始终可见，其余领域工具按任务/意图文本 BM25 选出 top N，剩余进入
+  SDK deferred（schema 不进 prompt，只列名字），并追加只读 `search_tools` 返回
+  name/description/schema/deferred。环境变量回退支持 `KAIYANG_TOOL_VISIBILITY_LIMIT`
+  与 `POJUN_TOOL_VISIBILITY_LIMIT`。只改 schema 预算，不改注册/权限/执行。
+- **维度级工具路由学习（P2-1）**：`db.ToolOutcomeStats` / `db.HighErrorTools` 按
+  「意图维度 × 工具」聚合 `activity` 与 `intent_reflections`；worker 启动时若同维度
+  ≥2 个工具且 ≥8 次调用，注入「本维度工具表现（历史，仅参考）」并单列高错误率工具
+  （≥5 次、错误率 ≥60%）。只读提示，不拦截、不降权；样本不足时提示词逐字不变。
+
 ### 运维可靠性（同步上游 v0.4.100–v0.4.120）
 
 - **MCP 启动健康检查**：记录 `last_check_at/last_ok/last_error/last_latency_ms/tool_count`，

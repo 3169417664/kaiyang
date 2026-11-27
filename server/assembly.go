@@ -288,6 +288,17 @@ func seedPrompts(pg *db.DB) {
 // and缺省入参 get injected. MCP/skill/host tools have no row and pass through.
 func wireTools(pg *db.DB, domainReg map[string]actool.CoreTool) {
 	agent.FindingTrafficBindingEnabled = func() bool { return pg.GetBool(settingAgentTrafficBinding, false) }
+	// P2-2 工具可见性上限：后台设置优先（0/未设置=关闭），否则回落到环境变量。
+	agent.ToolVisibilityLimit = func() int {
+		if v, ok, _ := pg.GetSetting(settingToolVisibilityLimit); ok {
+			n, err := strconv.Atoi(strings.TrimSpace(v))
+			if err != nil || n <= 0 {
+				return 0
+			}
+			return n
+		}
+		return agent.ToolVisibilityLimitEnv()
+	}
 	// 证据附件列表（v0.4.9）：agent 的 list_artifacts 工具读取本任务已登记附件。
 	agent.ListTaskArtifacts = func(taskID string) ([]db.TaskArtifact, error) { return pg.ListTaskArtifacts(taskID) }
 	// reporter 的 chat 会话没有任务上下文（v0.4.20）：允许工具按 finding_id
@@ -447,6 +458,8 @@ func wireTools(pg *db.DB, domainReg map[string]actool.CoreTool) {
 		var bashNote string
 		if localExec {
 			bashNote = agent.EnvCapabilityNote()
+			// 资源自适应未启用时返回空串，Bash 描述与升级前一致。
+			bashNote += agent.ResourceCapabilityNote()
 			if len(shellHints) > 0 {
 				bashNote += "\n\n以下工具已安装在此 bash 环境中，可直接通过 Bash 调用：\n" + strings.Join(shellHints, "\n")
 			}

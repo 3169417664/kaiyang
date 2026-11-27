@@ -1985,3 +1985,55 @@ CREATE INDEX IF NOT EXISTS idx_auth_sessions_expires ON auth_sessions(expires_at
 
 -- 会话的创建者用于把「本地命令执行/平台高危工具」限制在管理员发起的运行中。
 ALTER TABLE conversations ADD COLUMN IF NOT EXISTS created_by TEXT NOT NULL DEFAULT '';
+
+-- ── 任务级多角色测试凭据池（上游 v0.4.120 #24）───────────────────────────
+-- 每个任务可配置 admin/user_a/user_b 等命名凭据。config 复用 TaskAuthConfig
+-- 的 DBValue 形态（含秘密；API DTO 只回 has_* 标记）。
+-- status: pending | ok | failed | locked；secret_hash 用于凭据变更后自动复位熔断。
+CREATE TABLE IF NOT EXISTS task_credentials (
+    id              BIGSERIAL PRIMARY KEY,
+    task_id         BIGINT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    role            TEXT NOT NULL,
+    config          JSONB NOT NULL DEFAULT '{}',
+    status          TEXT NOT NULL DEFAULT 'pending',
+    last_checked_at TIMESTAMPTZ,
+    last_error      TEXT NOT NULL DEFAULT '',
+    failure_count   INT NOT NULL DEFAULT 0,
+    locked_until    TIMESTAMPTZ,
+    secret_hash     TEXT NOT NULL DEFAULT '',
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT ck_task_credential_role CHECK (role ~ '^[A-Za-z][A-Za-z0-9_-]{0,31}$'),
+    CONSTRAINT ck_task_credential_status CHECK (status IN ('pending','ok','failed','locked')),
+    CONSTRAINT uq_task_credential_role UNIQUE (task_id, role)
+);
+CREATE INDEX IF NOT EXISTS idx_task_credentials_task ON task_credentials(task_id);
+
+-- SRC/众测 program profile（上游 v0.4.112）：任务级平台/handle/scope/excluded/
+-- RPS/允许扫描器/dry-run/allow_race。NULL=未配置（现有任务零行为变化）；
+-- 写入端做长度与枚举校验，不含凭据。读取走窄查询，不进 taskCols/scanTask 热路径。
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS program_profile JSONB;
+
+-- ── §CLEANUP-JOBS  任务删除后的异步清理队列 ─────────────────────────
+-- 任务删除的 PG 事务只删任务行并把流量/LLM/文件清理写进本表，秒级提交；
+-- 后台单通道 worker 分批执行，进程重启后从 pending 续跑。done/failed 行保留
+-- 作审计；同一 (task,kind) 同时最多一个 pending/running，防止重复入队。
+CREATE TABLE IF NOT EXISTS cleanup_jobs (
+  id          BIGSERIAL PRIMARY KEY,
+  task_id     BIGINT,
+  kind        TEXT NOT NULL,
+  payload     JSONB NOT NULL DEFAULT '{}'::jsonb,
+  state       TEXT NOT NULL DEFAULT 'pending',
+  attempts    INT NOT NULL DEFAULT 0,
+  total       BIGINT NOT NULL DEFAULT 0,
+  done        BIGINT NOT NULL DEFAULT 0,
+  last_error  TEXT NOT NULL DEFAULT '',
+  run_after   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_cleanup_jobs_state ON cleanup_jobs(state, run_after, id);
+CREATE INDEX IF NOT EXISTS idx_cleanup_jobs_task ON cleanup_jobs(task_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_cleanup_jobs_active
+  ON cleanup_jobs(task_id, kind)
+  WHERE state IN ('pending','running') AND task_id IS NOT NULL;

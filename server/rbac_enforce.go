@@ -79,6 +79,11 @@ func permissionForRequest(method, fullPath string) (string, bool) {
 	if strings.HasPrefix(p, "/tasks/") && strings.Contains(p, "/llm") {
 		return crudPerm(method, "llm"), true
 	}
+	// 任务级多角色凭据池 / SRC 众测 profile：跟随 task 读写权限。
+	// 凭据秘密只在 DB 与 agent 解析层使用，接口只回 DTO（无 secret 字段）。
+	if strings.HasPrefix(p, "/tasks/") && (strings.Contains(p, "/credentials") || strings.Contains(p, "/program-profile")) {
+		return crudPerm(method, "task"), true
+	}
 	// 任务级拦截规则是安全控制面的一部分：读可下放，写仅 admin。
 	if strings.Contains(p, "/intercept-rules") {
 		if method == http.MethodGet || method == http.MethodHead {
@@ -100,7 +105,12 @@ func permissionForRequest(method, fullPath string) (string, bool) {
 		return crudPerm(method, "hostenv"), true
 	case strings.HasPrefix(p, "/listeners"), strings.HasPrefix(p, "/c2"):
 		return crudPerm(method, "c2"), true
-	case strings.HasPrefix(p, "/settings"):
+	case strings.HasPrefix(p, "/settings"), strings.HasPrefix(p, "/resource"),
+		strings.HasPrefix(p, "/tls"):
+		// 资源计划与 TLS/证书都属于管理面：读写都归 config 权限（默认 admin）。
+		return crudPerm(method, "config"), true
+	case strings.HasPrefix(p, "/cleanup"):
+		// 删除后清理队列是运维控制面：读列表可给 config:read，重试/消费仅 admin。
 		return crudPerm(method, "config"), true
 	case strings.HasPrefix(p, "/llm"):
 		return crudPerm(method, "llm"), true
@@ -133,6 +143,12 @@ func permissionForRequest(method, fullPath string) (string, bool) {
 		strings.HasPrefix(p, "/sessions"), strings.HasPrefix(p, "/side-questions"),
 		strings.HasPrefix(p, "/commands"), strings.HasPrefix(p, "/llm-records"):
 		return crudPerm(method, "task"), true
+	case p == "/traffic/retention":
+		// 留存执行等价于删除：POST 即使 dry_run 也属于删除控制面，不能给 viewer。
+		if method == http.MethodGet || method == http.MethodHead {
+			return "traffic:read", true
+		}
+		return "traffic:delete", true
 	case strings.HasPrefix(p, "/traffic"):
 		// 读与删必须分开：viewer 只有 traffic:read，不能清空证据。
 		if method == http.MethodDelete {

@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -118,6 +119,9 @@ type ScanArgs struct {
 	TimeoutTotal time.Duration // whole-run ceiling (default 10m, cap 30m)
 	// Proxy 是出口代理 URL（可空）。空=直连，命令里不出现 -proxy。
 	Proxy string
+	// RateLimit 是每秒请求上限（nuclei -rate-limit）。0 = 不添加该参数，
+	// 命令与升级前完全一致；资源自适应开启且容量偏小时由 agent 层缩放后传入。
+	RateLimit int
 }
 
 // BuildNucleiCmd assembles the nuclei invocation. Templates restricted to the
@@ -195,6 +199,9 @@ func BuildNucleiCmd(ctx context.Context, templatesDir string, a ScanArgs) (*exec
 		for _, rel := range templates {
 			args = append(args, "-t", filepath.Join(templatesDir, filepath.FromSlash(rel)))
 		}
+	}
+	if a.RateLimit > 0 {
+		args = append(args, "-rate-limit", strconv.Itoa(a.RateLimit))
 	}
 	if sev := strings.TrimSpace(a.Severity); sev != "" {
 		args = append(args, "-severity", sev)

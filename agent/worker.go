@@ -81,6 +81,10 @@ type Worker struct {
 	// taskAuthBlock 是任务级登录凭据的渲染块（v0.4.8，由 host 在装配时设置）。
 	// 非空则注入 system prompt：worker 先登录、再在会话内测试。
 	taskAuthBlock string
+	// taskCredResolver 解析任务级命名凭据池（#24）；nil=仅支持旧单账号/资产凭据。
+	taskCredResolver TaskCredentialResolver
+	// programProfile 是任务级 SRC/众测 profile（v0.4.112）；nil=不渲染，零行为变化。
+	programProfile *db.ProgramProfile
 	// injectConstraints resolves whether this task's operation constraints get
 	// injected into the worker system prompt. Read per run so the settings toggle
 	// takes effect without rebuilding the agent. nil = inject (default).
@@ -167,6 +171,12 @@ func (w *Worker) SetRunTimeout(run time.Duration) {
 
 // SetTaskAuthBlock 设置任务级登录凭据渲染块（host 装配时调用；空串=不注入）。
 func (w *Worker) SetTaskAuthBlock(block string) { w.taskAuthBlock = block }
+
+// SetTaskCredentialResolver 注入任务级多角色凭据解析器（#24）。
+func (w *Worker) SetTaskCredentialResolver(r TaskCredentialResolver) { w.taskCredResolver = r }
+
+// SetProgramProfile 注入任务级 SRC/众测 profile（v0.4.112）；nil=不渲染。
+func (w *Worker) SetProgramProfile(profile *db.ProgramProfile) { w.programProfile = profile }
 
 // SetTaskPromptOverride 注入任务级提示词快照。
 func (w *Worker) SetTaskPromptOverride(body string) { w.taskPromptOverride = body }
@@ -603,6 +613,8 @@ func firstCancel(cs []func(error)) func(error) {
 func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.AssetStore, ts *db.ExplorationStore, intent *db.Node, hooks harness.HookRunner, emit func(db.Activity), enr EnrichTrigger, notifyFinding func(int64, string), requestID, message string, workCancel func(error)) (harness.TerminalReason, WriteCounts, error) {
 	tsx := NewToolSet(ts, name)
 	tsx.SetEgressProxy(w.proxyAddr, w.proxyCACert) // 原生 http_request/session_login 与 Bash 同源出口
+	tsx.SetTaskCredentialResolver(w.taskCredResolver)
+	tsx.SetProgramProfile(w.programProfile)
 	tsx.SetReviewEnabled(w.reviewEnabledFn)
 	if w.agentKey != "" && w.agentKey != "worker" {
 		tsx.SetExecutorKey(w.agentKey)
@@ -631,6 +643,8 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	// 收敛工具面、减少低价值调用。其余 SDK 默认工具(Read/Write/Edit/LS/Bash/Sleep)照常。
 	base = append(base, defaultToolsExcept("MultiEdit", "Glob", "Grep")...)
 	ctx = WithRunInfo(ctx, RunInfo{TaskID: taskID, ExplorationID: explorationID(ts), IntentID: intent.ID, Kind: KindWorker})
+	// P2-2：意图自身文本作为 BM25 查询（不含工具输出，目标无法影响排序）。
+	ctx = WithToolQuery(ctx, intentToolQuery(intent))
 	tools, def, cleanup := AugmentTools(ctx, w.agentKey, base)
 	defer cleanup()
 
@@ -655,6 +669,7 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	if w.wantConstraints() {
 		sysBody += constraintBlock(ts) // 操作约束(若有)注入系统提示,worker 执行时严格遵守
 	}
+	sysBody += ProgramProfileBlock(w.programProfile)
 	if w.taskAuthBlock != "" {
 		sysBody += w.taskAuthBlock // 任务级登录凭据（v0.4.8）：先登录再测
 	}
@@ -690,6 +705,8 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	// 终态经验（v0.4.100）：同维度/同资产上已经失败或零产出的方向，引擎在终态
 	// 自动沉淀；worker 开局先看，避免重复同一种打法。
 	sysBody += recentLessonsBlock(ts, intent, 3)
+	// P2-1 工具路由：同维度历史工具错误率，提示 worker 别重复高错误率打法。
+	sysBody += toolRoutingBlock(ts, intent, 5)
 	// 自主推进：本意图必须被证实/证伪，不得空转收场。
 	sysBody += autopilotTail(ctx, autopilotWorkerGuidance)
 	sysBody += "\n\n开始执行上面这条意图：只做它、只产生事实、assets、finding、做完即停。"

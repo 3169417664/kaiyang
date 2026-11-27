@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -1407,6 +1408,65 @@ FROM assets a JOIN other_assets o ON o.id=a.id`, taskID, explorationID)
 	}
 	sort.Strings(out)
 	return out, nil
+}
+
+// TrafficHostsStillShared re-checks host ownership at cleanup time. The async
+// worker deletes traffic after the task row is already gone, so a host that a
+// different live task has since adopted must be dropped from the delete set.
+func (d *DB) TrafficHostsStillShared(ctx context.Context, taskID, explorationID int64, hosts []string) (map[string]bool, error) {
+	shared := make(map[string]bool, len(hosts))
+	if len(hosts) == 0 {
+		return shared, nil
+	}
+	wanted := make(map[string]struct{}, len(hosts))
+	for _, host := range hosts {
+		host = strings.ToLower(strings.TrimSpace(host))
+		if host != "" {
+			wanted[host] = struct{}{}
+		}
+	}
+	if len(wanted) == 0 {
+		return shared, nil
+	}
+	rows, err := d.QueryContext(ctx, `
+SELECT COALESCE(a.domain,''), COALESCE(a.ip,''), COALESCE(a.url,'')
+FROM assets a
+WHERE EXISTS (
+  SELECT 1 FROM tasks t
+  WHERE t.id<>$1 AND t.deleted_at IS NULL AND t.id=ANY(a.task_ids)
+) OR EXISTS (
+  SELECT 1
+  FROM exploration_anchors ea
+  JOIN exploration_nodes n ON n.id=ea.node_id
+  JOIN tasks t ON t.exploration_id=n.exploration_id
+  WHERE ea.asset_id=a.id AND t.id<>$1 AND t.deleted_at IS NULL
+    AND n.exploration_id<>$2
+)`, taskID, explorationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	add := func(raw string) {
+		raw = strings.ToLower(strings.TrimSpace(raw))
+		if _, ok := wanted[raw]; ok && raw != "" {
+			shared[raw] = true
+		}
+	}
+	for rows.Next() {
+		var domain, ip, rawURL string
+		if err := rows.Scan(&domain, &ip, &rawURL); err != nil {
+			return nil, err
+		}
+		add(domain)
+		add(ip)
+		if u, uerr := url.Parse(rawURL); uerr == nil {
+			add(u.Hostname())
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return shared, nil
 }
 
 const assetSelectCols = `SELECT id, type, company_id, array_to_json(task_ids)::text,
