@@ -1,0 +1,7 @@
+# Test fixtures intentionally contain placeholder "appSecret" strings to exercise
+# the mini-program unpack/audit path. They are synthetic, not credentials.
+[allowlist]
+paths = [
+  '''agent/tools_miniapp_test\.go''',
+  '''skills/mini-program/scripts/wxapkg_fixture\.py''',
+]

@@ -414,6 +414,8 @@ var builtinSkillVisibility = map[string][]string{
 	"wireless-hardware-attack": {"pentest", "worker"},
 	// SRC 方法论库（48 篇知识库 + 11 篇规则）：规划者定方向、执行者查细节
 	"src-hunting": {"planner", "pentest", "worker"},
+	// 威胁建模：任务早期定信任边界/滥用场景，规划者与执行者都该看到。
+	"threat-modeling": {"planner", "pentest", "worker"},
 	// 浏览器自动化：worker 做 SPA/登录态探测时可用
 	"playwright-cli": {"pentest", "worker"},
 	"apk-reverse":    {"pentest", "worker"},

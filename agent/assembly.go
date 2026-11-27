@@ -66,7 +66,7 @@ func AugmentTools(ctx context.Context, agentKey string, base []actool.CoreTool) 
 	// 放在 findingWorkflowTools 之后，确保平台补进来的写回工具也参与评估。
 	out, def = applyToolVisibility(ctx, out, def)
 	for i, t := range out {
-		out[i] = guardPanic(t)
+		out[i] = traceTool(guardPanic(t))
 	}
 	return out, def, cleanup
 }

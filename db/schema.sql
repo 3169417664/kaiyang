@@ -934,6 +934,13 @@ ALTER TABLE mcp_servers ADD COLUMN IF NOT EXISTS last_ok BOOLEAN;
 ALTER TABLE mcp_servers ADD COLUMN IF NOT EXISTS last_error TEXT;
 ALTER TABLE mcp_servers ADD COLUMN IF NOT EXISTS last_latency_ms INTEGER;
 ALTER TABLE mcp_servers ADD COLUMN IF NOT EXISTS tool_count INTEGER NOT NULL DEFAULT 0;
+-- MCP 工具描述指纹（上游 v0.4.123）：sha256(排序后的 name+description)。
+-- 描述变化 = 服务器升级或疑似 rug-pull；只告警，不自动禁用。tools_suspicious 是
+-- 命中提示注入话术的工具数，供 MCP 列表/详情展示。
+ALTER TABLE mcp_servers ADD COLUMN IF NOT EXISTS tools_hash TEXT;
+ALTER TABLE mcp_servers ADD COLUMN IF NOT EXISTS tools_hash_at TIMESTAMPTZ;
+ALTER TABLE mcp_servers ADD COLUMN IF NOT EXISTS tools_changed BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE mcp_servers ADD COLUMN IF NOT EXISTS tools_suspicious INTEGER NOT NULL DEFAULT 0;
 DROP TRIGGER IF EXISTS trg_mcp_upd ON mcp_servers;
 CREATE TRIGGER trg_mcp_upd BEFORE UPDATE ON mcp_servers
     FOR EACH ROW EXECUTE FUNCTION set_updated_at();
