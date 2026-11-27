@@ -441,11 +441,17 @@ func (t *ToolSet) doHTTP(ctx context.Context, a httpArgs, jar http.CookieJar) ht
 	}
 	// 默认 UA 是 Chrome/131 Windows；显式传 user_agent 时覆盖（issue #13：
 	// 指纹对抗/伪装移动端/复现特定客户端都需要可控的 UA）。
+	// 自定义 UA 必须可打印 ASCII：CR/LF 会注入新请求头（CWE-113）。
+	ua, uaErr := normalizeToolUserAgent(a.UserAgent)
+	if uaErr != nil {
+		out.Err = uaErr
+		return out
+	}
 	switch {
-	case a.UserAgent != "":
-		req.Header.Set("User-Agent", a.UserAgent)
+	case ua != "":
+		req.Header.Set("User-Agent", ua)
 	default:
-		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+		req.Header.Set("User-Agent", DefaultTargetUserAgent)
 	}
 	req.Header.Set("Accept", "*/*")
 	if body != "" && a.BodyJSON != "" {

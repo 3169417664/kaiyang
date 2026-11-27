@@ -746,6 +746,8 @@ func (t *ToolSet) WorkerTools() []actool.CoreTool {
 		t.authRequest(),
 		// evidence_check（v0.4.71）：复核高/危漏洞证据是否足以支撑危害结论（13 项检查 + src_ready）。
 		t.evidenceCheck(),
+		// validate_finding（v0.4.92 同步）：按类别跑程序化验证探针（RCE/XSS/SSRF）。
+		t.validateFinding(),
 		// 原生 HTTP 执行器 + 会话复用（红队版 v0.7.0 下放）：直接发请求拿结构化结果，
 		// 登录态进任务级 cookie jar 跨意图复用——「登录→越权→回读」成为基本能力。
 		t.httpRequest(), t.sessionLogin(),
@@ -790,6 +792,8 @@ func (t *ToolSet) MainAgentTools() []actool.CoreTool {
 		// asset management (handlers guard nil store internally)
 		t.insertAssets(), t.addCompanyScope(), t.listAssets(),
 		t.addFinding(), t.recordFact(),
+		t.validateFinding(),
+		t.auditFindingTool(),
 		t.addTaskScope(),
 		// list_untested_assets：按需查本任务范围内未测资产(类型+分页)，自行决定补测。
 		t.listUntestedAssets(),

@@ -4,6 +4,15 @@
 
 ## [Unreleased]
 
+### 新功能 / 安全（同步上游 v0.4.92–v0.4.102）
+
+- **`validate_finding`**：按 RCE/命令注入、XSS、SSRF 类别跑程序化验证探针，输出
+  `validate:<token>:pass` 机验标记；探针走平台出口/录制与审批链。
+- **`audit_finding`**：独立只读复核 finding 证据，按 http_diff / dual_identity /
+  effect_proof / poc_replay / oracle / manual 策略输出 pass/fail/needs_human。
+- **CRLF / @file 防护**：`auth_request`、`diff_responses` 的 header 值只允许可打印
+  ASCII 且禁止 `@` 前缀；`http_request` 的 user_agent 统一做字符集/长度校验。
+
 ## [0.2.1] - 2026-11-20
 
 ### 修复（2026-11-20 部署反馈）

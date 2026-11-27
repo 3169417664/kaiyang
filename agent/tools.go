@@ -2994,6 +2994,8 @@ func (t *ToolSet) PlannerTools() []actool.CoreTool {
 		t.killWorkTool(), t.steerWorkTool(),
 		// report_finding：规划态势研判时若自身已确证漏洞，可直接登记（与 worker 同工具）。
 		t.addFinding(),
+		// audit_finding（v0.4.102 同步）：独立只读复核 finding 证据是否符合声明的验证策略。
+		t.auditFindingTool(),
 		// list_companies：查看企业列表 + scope + 资产数（拿 company_id / 理解归属范围）。
 		t.listCompanies(),
 		// list_assets：规划时按 DSL 检索全资产库（配合 list_untested_assets 的"范围内未测"视角，
@@ -3008,6 +3010,8 @@ func (t *ToolSet) PlannerTools() []actool.CoreTool {
 		// search_vulns / get_vuln：识别出目标组件后查公开已知漏洞（NVD+KEV），
 		// 规划阶段把「有现成利用的方向」排进 todolist。
 		t.searchVulns(), t.getVuln(), t.getPoc(), t.scanWithNuclei(), t.netContext(),
+		// validate_finding（v0.4.92 同步）：按类别跑程序化验证探针。
+		t.validateFinding(),
 		// listener_*：回连接收器（红队 C2 前置）——start/stop 走 ask 审批，sessions 只读。
 		t.listenerStart(), t.listenerStop(), t.listenerSessions(),
 		// auth_request：用资产上已登记的凭据组装带认证的请求（横向/越权验证的前提）。
