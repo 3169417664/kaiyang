@@ -173,6 +173,26 @@ func Open(dsn string) (*DB, error) {
 	return d, nil
 }
 
+// OpenReadOnly connects without applying the schema or seeding builtins. It is
+// for offline maintenance jobs (kaiyang-maint bench score) that must never mutate
+// the database: no DDL, no migrations, no seed rows. The connection is still a
+// normal read-write DSN; callers are responsible for only issuing SELECTs.
+func OpenReadOnly(dsn string) (*DB, error) {
+	sqlDB, err := sql.Open("pgx", dsn)
+	if err != nil {
+		return nil, err
+	}
+	// 离线评分只有少量并发查询，池子小一点，避免和线上服务抢连接。
+	sqlDB.SetMaxOpenConns(4)
+	sqlDB.SetMaxIdleConns(4)
+	sqlDB.SetConnMaxLifetime(30 * time.Minute)
+	if err := sqlDB.Ping(); err != nil {
+		sqlDB.Close()
+		return nil, fmt.Errorf("ping postgres (%s): %w", config.Redact(dsn), err)
+	}
+	return &DB{sqlDB}, nil
+}
+
 // builtinAgent describes one of the fixed agents and its prompt-variable catalog.
 type builtinAgent struct {
 	key, name, role, desc string

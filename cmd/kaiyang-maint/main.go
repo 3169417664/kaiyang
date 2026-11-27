@@ -43,10 +43,15 @@ const (
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: kaiyang-maint <scan-artifacts|previews|reset-prompts|fix-permissions|scope-audit> --config <config.json> [--force] [--out file]")
+		fmt.Fprintln(os.Stderr, "usage: kaiyang-maint <scan-artifacts|previews|reset-prompts|fix-permissions|scope-audit|bench> --config <config.json> [--force] [--out file]")
 		os.Exit(2)
 	}
 	cmd := os.Args[1]
+	// bench 是只读评测入口：不建表、不 seed、不写库，必须在 db.Open 之前分流。
+	if cmd == "bench" {
+		runBench(os.Args[2:])
+		return
+	}
 	fs := flag.NewFlagSet(cmd, flag.ExitOnError)
 	cfgPath := fs.String("config", "/opt/kaiyang/config.json", "POJUN config.json 路径")
 	dataDir := fs.String("data", "", "数据目录（默认取 config 目录下的 data）")
@@ -87,7 +92,6 @@ func main() {
 		os.Exit(2)
 	}
 }
-
 
 // auditAutoScope 按自动范围归属规则回放 source=auto 的范围行，输出
 // 「应保留/建议清理」清单。只读——删除必须先 pg_dump 备份、人工确认后执行。
