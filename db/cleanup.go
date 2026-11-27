@@ -123,7 +123,8 @@ func (d *DB) ClaimCleanupJob(ctx context.Context, minAge time.Duration) (*Cleanu
 	err = tx.QueryRowContext(ctx, `
 WITH next AS (
   SELECT id FROM cleanup_jobs
-  WHERE state='pending' AND run_after <= now() AND created_at <= now() - $1::interval
+  WHERE state='pending' AND run_after <= now()
+    AND (kind <> 'traffic' OR created_at <= now() - $1::interval)
   ORDER BY id
   LIMIT 1
   FOR UPDATE SKIP LOCKED
