@@ -4,6 +4,20 @@
 
 ## [Unreleased]
 
+### 运维可靠性（同步上游 v0.4.100–v0.4.120）
+
+- **MCP 启动健康检查**：记录 `last_check_at/last_ok/last_error/last_latency_ms/tool_count`，
+  启动时检查全部 enabled MCP；错误脱敏；MCP 页显示健康状态。
+- **附件配额闭环**：任务级 advisory lock 内完成去重/配额/插入；配额失败 fail-closed；
+  DELETE 同时清理主文件、缩略图与预览缓存；列表接口返回配额。
+- **终态 reflection / 覆盖率矩阵 / 分层上下文**：`intent_reflections`、planner/worker
+  经验注入、asset×dimension 覆盖矩阵同源到 planner/autopilot/报告、
+  `graph_overview` index/summary/full、Summary 12KB 预算与长意图窗口化。
+- **离线评测**：`kaiyang-maint bench score|validate|compare`、20 个内置场景、`pricing`
+  统一成本估算；`db.OpenReadOnly` 只读评分。
+- **任务预算网关**：token/USD/墙钟预算，80% 收敛提醒，100% 收尾；未达成目标落 timeout。
+
+
 ### 新功能 / 安全（同步上游 v0.4.92–v0.4.102）
 
 - **`validate_finding`**：按 RCE/命令注入、XSS、SSRF 类别跑程序化验证探针，输出

@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/3169417664/kaiyang/agent"
 	"github.com/3169417664/kaiyang/db"
 	"github.com/3169417664/kaiyang/report"
 )
@@ -22,6 +23,35 @@ import (
 // 历史行为（剔除误报/重复/忽略/风险接受、其余全收）会把 pending/in_progress
 // 也带进客户报告；现在默认 confirmed，调用方可显式追加 resolved/fixed。
 var reportIncludeStatuses = []string{db.FindingConfirmed}
+
+// reportCoverage builds the «覆盖与排除» section from the same matrix used by
+// the planner/nudge/autopilot (v0.4.100). Returns nil when the task has no
+// scoped assets or the matrix query fails — reports must never fail on advisory
+// coverage data.
+func (s *Server) reportCoverage(t *Task) *report.CoverageSection {
+	if t == nil || t.Store == nil {
+		return nil
+	}
+	tid, _ := strconv.ParseInt(t.ID, 10, 64)
+	m := agent.CoverageMatrixForTask(s.m.Assets(), t.Store, tid)
+	if m == nil || m.Assets == 0 {
+		return nil
+	}
+	rows := make([]report.CoverageRow, 0, len(m.TopGaps))
+	for _, g := range m.TopGaps {
+		rows = append(rows, report.CoverageRow{
+			Dimension: agent.DimensionLabel(g.Dimension),
+			AssetType: g.AssetType,
+			Untested:  g.Untested,
+			Samples:   strings.Join(g.Samples, "、"),
+		})
+	}
+	return &report.CoverageSection{
+		Assets: m.Assets, Tested: m.Tested, InProgress: m.InProgress,
+		Findings: m.Findings, Rows: rows,
+		Note: "覆盖按「资产 × 维度」计算；未测不等于有漏洞，零产出方向也计入排除范围。",
+	}
+}
 
 // parseReportStatuses 解析 include_statuses 查询参数（逗号分隔）。
 // 空值 = 默认 confirmed；只接受合法状态值，非法值忽略。
@@ -215,6 +245,7 @@ func (s *Server) exportTaskDocx(w http.ResponseWriter, r *http.Request) {
 		PageHeader:     fmt.Sprintf("渗透测试报告 — %s", t.Description),
 		ArtifactImage:  s.artifactImageResolver(t.ID, 0),
 		Logo:           s.profileLogo(profile),
+		Coverage:       s.reportCoverage(t),
 	})
 	name := fmt.Sprintf("pojun-report-task%s-%s.docx", t.ID, time.Now().Format("20060102"))
 	w.Header().Set("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")

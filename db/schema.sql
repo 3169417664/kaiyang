@@ -280,6 +280,34 @@ CREATE TABLE IF NOT EXISTS exploration_anchors (
 );
 CREATE INDEX IF NOT EXISTS idx_anchor_asset ON exploration_anchors(asset_id);
 
+-- intent_reflections: deterministic, per-intent terminal lessons (v0.4.100).
+-- Written by the engine when an intent reaches any terminal state; read by the
+-- planner/worker to avoid repeating a failed direction. Deliberately a table
+-- (not a new exploration node kind) to avoid widening the node kind/state
+-- constraints and UI surface.
+CREATE TABLE IF NOT EXISTS intent_reflections (
+    id               BIGSERIAL PRIMARY KEY,
+    exploration_id   BIGINT NOT NULL REFERENCES explorations(id) ON DELETE CASCADE,
+    intent_id        BIGINT NOT NULL REFERENCES exploration_nodes(id) ON DELETE CASCADE,
+    dimension        TEXT NOT NULL DEFAULT '',
+    terminal_state   TEXT NOT NULL DEFAULT '',
+    terminal_reason  TEXT NOT NULL DEFAULT '',
+    wrote_back       INT  NOT NULL DEFAULT 0,
+    tool_calls       INT  NOT NULL DEFAULT 0,
+    tool_errors      INT  NOT NULL DEFAULT 0,
+    success          BOOLEAN NOT NULL DEFAULT false,
+    hypothesis       TEXT NOT NULL DEFAULT '',
+    success_criteria TEXT NOT NULL DEFAULT '',
+    summary          TEXT NOT NULL DEFAULT '',
+    lesson           TEXT NOT NULL DEFAULT '',
+    asset_ids        JSONB NOT NULL DEFAULT '[]',
+    payload          JSONB NOT NULL DEFAULT '{}',
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_intent_reflections_intent ON intent_reflections(intent_id);
+CREATE INDEX IF NOT EXISTS idx_intent_reflections_exp ON intent_reflections(exploration_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_intent_reflections_dim ON intent_reflections(exploration_id, dimension, created_at DESC);
+
 -- task_constraints: operator-authored operation constraints (allow/deny) for a task.
 -- Extracted by the goals decomposer at round 0 (from goal/description), editable at
 -- runtime by the main agent + 总览「约束管理」. Injected into the planner/worker system
@@ -565,6 +593,8 @@ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS queue_mode TEXT NOT NULL DEFAULT '';
 -- 暂停开始时间；补旧库。NULL=当前未处于暂停。恢复时按 (now-paused_at)
 -- 顺延 deadline_at，避免窗口外休眠消耗任务的有效运行预算。
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS paused_at TIMESTAMPTZ;
+-- 累计暂停秒数（任务级预算）：分钟预算 = 首次运行至今 - 累计暂停 - 当前暂停。
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS paused_total_seconds BIGINT NOT NULL DEFAULT 0;
 -- 可选的任务名称;补旧库。空串=未命名,前端展示时回退到描述。
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS name TEXT NOT NULL DEFAULT '';
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS category_id BIGINT REFERENCES task_categories(id) ON DELETE SET NULL;
@@ -897,6 +927,13 @@ ALTER TABLE mcp_servers ADD CONSTRAINT mcp_servers_transport_check
     CHECK (transport IN ('stdio','http','sse'));
 -- 旧库补列(schema.sql 每次启动都会 Exec)。
 ALTER TABLE mcp_servers ADD COLUMN IF NOT EXISTS insecure BOOLEAN NOT NULL DEFAULT false;
+-- MCP 启动/手动健康检查结果（v0.4.107）：last_ok NULL = 从未检查；
+-- last_error 只存脱敏后的一行错误，tool_count 保留最近一次成功发现的工具数。
+ALTER TABLE mcp_servers ADD COLUMN IF NOT EXISTS last_check_at TIMESTAMPTZ;
+ALTER TABLE mcp_servers ADD COLUMN IF NOT EXISTS last_ok BOOLEAN;
+ALTER TABLE mcp_servers ADD COLUMN IF NOT EXISTS last_error TEXT;
+ALTER TABLE mcp_servers ADD COLUMN IF NOT EXISTS last_latency_ms INTEGER;
+ALTER TABLE mcp_servers ADD COLUMN IF NOT EXISTS tool_count INTEGER NOT NULL DEFAULT 0;
 DROP TRIGGER IF EXISTS trg_mcp_upd ON mcp_servers;
 CREATE TRIGGER trg_mcp_upd BEFORE UPDATE ON mcp_servers
     FOR EACH ROW EXECUTE FUNCTION set_updated_at();

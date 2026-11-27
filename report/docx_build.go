@@ -25,6 +25,8 @@ type TaskDocxInput struct {
 	Findings    []*db.DBFinding
 	// Goals 是逐条任务目标及其达成状态（红队版 v0.6.31 下放）；nil = 报告省略「目标达成情况」。
 	Goals []GoalLine
+	// Coverage 是「覆盖与排除」小节（v0.4.100）；nil = 省略。
+	Coverage *CoverageSection
 	// AssetNames 资产 id → 可读名（域名/IP/URL）。nil/缺项回退 "id:N"（A8）。
 	AssetNames map[int64]string
 	// Retests finding id → 复测记录（最新在前）。报告带「复测记录」小节（A9）。
@@ -176,6 +178,21 @@ func BuildTaskDocx(in TaskDocxInput) *Docx {
 		d.P("测试执行窗口:" + in.TestWindow)
 	}
 	d.P("报告生成时间:" + FormatTimeUTC(in.GeneratedAt))
+	// 覆盖与排除（v0.4.100）：与 planner 态势/引擎提醒同源，明确“没测什么”。
+	if c := in.Coverage; c != nil {
+		d.H2("覆盖与排除")
+		d.P(fmt.Sprintf("范围内资产 %d 个，已触达 %d 个，进行中 %d 个，确认漏洞 %d 个。", c.Assets, c.Tested, c.InProgress, c.Findings))
+		if len(c.Rows) > 0 {
+			rows := make([][]string, 0, len(c.Rows))
+			for _, r := range c.Rows {
+				rows = append(rows, []string{r.Dimension, assetTypeCN(r.AssetType), fmt.Sprint(r.Untested), nz(r.Samples, "—")})
+			}
+			d.Table([]string{"未测维度", "资产类型", "未测数量", "样本资产"}, rows)
+		}
+		if c.Note != "" {
+			d.P(c.Note)
+		}
+	}
 	if len(in.AssetCounts) > 0 {
 		d.H2("测试范围")
 		d.P("本次测试覆盖以下资产类型（明细见附录 A）:")
