@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bytes"
+	"context"
 	"strings"
 	"text/template"
 	"time"
@@ -50,24 +51,81 @@ var (
 	WorkerTemplateDefault  func() string
 )
 
+// ProfilePrompt is the LLM-profile-scoped prompt segment applied to an agent's
+// system prompt when that profile is in effect for the agent. Text is plain text
+// (never rendered as a Go template); Mode is "prepend", "append" or "replace".
+type ProfilePrompt struct {
+	Text      string
+	Mode      string
+	ProfileID int64
+	// Source reports why this overlay is active: agent_binding | conversation_pin |
+	// task_chain | global_profile. Empty = no overlay.
+	Source string
+}
+
+// Active reports whether this overlay should be injected.
+func (p ProfilePrompt) Active() bool {
+	if p.Text == "" {
+		return false
+	}
+	switch p.Mode {
+	case "prepend", "append", "replace":
+		return true
+	}
+	return false
+}
+
+type profilePromptCtxKey struct{}
+
+// WithProfilePrompt attaches a per-run overlay to ctx. Chat and goals read it
+// back; planner/worker/mainagent use per-instance resolvers because they are
+// long-lived task objects, while a chat turn belongs to one conversation.
+func WithProfilePrompt(ctx context.Context, p ProfilePrompt) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, profilePromptCtxKey{}, p)
+}
+
+// ProfilePromptFrom returns the overlay attached to ctx, or the zero value.
+func ProfilePromptFrom(ctx context.Context) ProfilePrompt {
+	if ctx == nil {
+		return ProfilePrompt{}
+	}
+	if p, ok := ctx.Value(profilePromptCtxKey{}).(ProfilePrompt); ok {
+		return p
+	}
+	return ProfilePrompt{}
+}
+
 // renderSystemWithOverride 在 renderSystem 之外增加最高优先级的任务级快照：
 // 任务快照 > 全局 Agent 提示词覆盖 > 模板库默认 > 内置默认。
 func renderSystemWithOverride(agentKey, def string, vars any, taskOverride string) string {
+	return renderSystemWithOverrideProfile(agentKey, def, vars, taskOverride, ProfilePrompt{})
+}
+
+// renderSystemWithOverrideProfile is renderSystemWithOverride plus the
+// LLM-profile-scoped overlay. Ordering within the assembled body:
+//
+//	prepend: [P] + body + skills
+//	append:  body + skills + [P]      (before the caller-appended code tails)
+//	replace: [P] + skills             (original body dropped, skills/tails kept)
+//
+// Without an active overlay the output is byte-for-byte identical to before.
+func renderSystemWithOverrideProfile(agentKey, def string, vars any, taskOverride string, pp ProfilePrompt) string {
 	if strings.TrimSpace(taskOverride) != "" {
 		if out, err := renderTmpl(taskOverride, vars); err == nil {
-			body := out
-			if SkillIndexBlock != nil {
-				if blk := SkillIndexBlock(agentKey); blk != "" {
-					body += "\n\n" + blk
-				}
-			}
-			return body
+			return assembleSystemBody(agentKey, out, pp)
 		}
 	}
-	return renderSystem(agentKey, def, vars)
+	return renderSystemWith(agentKey, def, vars, pp)
 }
 
 func renderSystem(agentKey, def string, vars any) string {
+	return renderSystemWith(agentKey, def, vars, ProfilePrompt{})
+}
+
+func renderSystemWith(agentKey, def string, vars any, pp ProfilePrompt) string {
 	tmpl := def
 	if PromptOverride != nil {
 		if t, ok := PromptOverride(agentKey); ok && t != "" {
@@ -80,12 +138,40 @@ func renderSystem(agentKey, def string, vars any) string {
 	} else if out, err := renderTmpl(def, vars); err == nil {
 		body = out
 	}
+	return assembleSystemBody(agentKey, body, pp)
+}
+
+// assembleSystemBody appends the host-injected skill index and the optional
+// profile-scoped prompt. Callers append code-owned tails AFTER this, so both the
+// skill index and the hard tail survive a replace overlay.
+func assembleSystemBody(agentKey, body string, pp ProfilePrompt) string {
+	skill := ""
 	if SkillIndexBlock != nil {
-		if blk := SkillIndexBlock(agentKey); blk != "" {
-			body += "\n\n" + blk
-		}
+		skill = SkillIndexBlock(agentKey)
 	}
-	return body
+	var b strings.Builder
+	switch {
+	case pp.Active() && pp.Mode == "replace":
+		b.WriteString(pp.Text)
+		if skill != "" {
+			b.WriteString("\n\n")
+			b.WriteString(skill)
+		}
+		return b.String()
+	case pp.Active() && pp.Mode == "prepend":
+		b.WriteString(pp.Text)
+		b.WriteString("\n\n")
+	}
+	b.WriteString(body)
+	if skill != "" {
+		b.WriteString("\n\n")
+		b.WriteString(skill)
+	}
+	if pp.Active() && pp.Mode == "append" {
+		b.WriteString("\n\n")
+		b.WriteString(pp.Text)
+	}
+	return b.String()
 }
 
 func renderTmpl(tmpl string, vars any) (string, error) {

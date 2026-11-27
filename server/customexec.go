@@ -41,9 +41,11 @@ func (s *Server) runCustomExecutorFor(ctx context.Context, t *Task, key string, 
 	prompt, _ := s.m.pg.CurrentPrompt(a.ID)
 	prov := s.llmDirect
 	if a.LLMProfileID != nil {
-		if p, _, ok := s.providerForProfile(*a.LLMProfileID); ok {
+		if p, _, ok := s.providerForAgentProfile(a.Key, *a.LLMProfileID); ok {
 			prov = p
 		}
+	} else if p, _, ok := s.globalProviderForAgent(a.Key); ok {
+		prov = p
 	}
 	if prov == nil {
 		return fmt.Errorf("执行器 %q 没有可用 LLM 配置", key)

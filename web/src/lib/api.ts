@@ -13,6 +13,7 @@ import type {
   Activity,
   Agent,
   AgentDetail,
+  AgentEffortOverrides,
   AgentTrigger,
   ArchiveBatchItem,
   Asset,
@@ -1499,7 +1500,19 @@ export const api = {
     session_header_key?: string; // 非空=每次请求带该 HTTP 头，头值=当前会话 session id；""=不发送
     user_agent?: string; // LLM 请求的 User-Agent；""=保持 SDK/Go 默认
     retry?: LLMRetryOverride; // 本配置的重试覆盖；各项留 0 = 跟随全局重试策略
+    prompt?: string; // 独立提示词纯文本；""=清空
+    prompt_mode?: string; // ""|prepend|append|replace；空=后端默认前置
+    prompt_apply_inherited?: boolean; // 任务链/全局选中本配置时是否也注入
   }) => post<{ id: number }>("/llm/profiles", p),
+  // Agent × LLM：读取/设置/清除该 Agent 对单个配置的思考强度覆盖。
+  agentEffortOverrides: (key: string) =>
+    get<AgentEffortOverrides>(`/agents/${encodeURIComponent(key)}/llm-effort-overrides`),
+  saveAgentEffortOverride: (key: string, profileId: number, effort: string) =>
+    put<void>(`/agents/${encodeURIComponent(key)}/llm-effort-overrides/${profileId}`, {
+      reasoning_effort: effort,
+    }),
+  deleteAgentEffortOverride: (key: string, profileId: number) =>
+    del<void>(`/agents/${encodeURIComponent(key)}/llm-effort-overrides/${profileId}`),
   deleteLLMProfile: (id: string) => del<{ deleted: number }>(`/llm/profiles/${id}`),
   activateLLMProfile: (id: string) => post<{ ok: boolean }>("/llm/profiles/active", { id: Number(id) }),
   // 轮询链的实际顺序 + 各配置的熔断状态。

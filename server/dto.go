@@ -634,6 +634,13 @@ type LLMProfileDTO struct {
 	// 0=继承全局策略 | -1=关闭该层重试 | >0=次数；interval_ms: 0=用默认指数退避 |
 	// >0=改用该固定毫秒间隔。全 0 = 完全跟随全局，即历史行为。
 	Retry db.RetryOverride `json:"retry"`
+	// 独立提示词（v0.4.121）：纯文本，只在该配置被显式绑定到 Agent，或开启
+	// prompt_apply_inherited 后被任务链/全局选路选中时注入。'' = 未配置。
+	Prompt               string `json:"prompt"`
+	PromptMode           string `json:"prompt_mode"`
+	PromptApplyInherited bool   `json:"prompt_apply_inherited"`
+	// 反向引用：哪些 Agent 覆盖了本配置的思考强度（只读，来自 effort 覆盖表）。
+	EffortOverrides []db.AgentEffortRef `json:"effort_overrides,omitempty"`
 }
 
 func llmProfileDTO(p *db.LLMProfile) LLMProfileDTO {
@@ -657,8 +664,12 @@ func llmProfileDTO(p *db.LLMProfile) LLMProfileDTO {
 		MaxTokens:        p.MaxTokens,
 		MaxTokensField:   p.MaxTokensField,
 		SessionHeaderKey: p.SessionHeaderKey,
-		UserAgent:        p.UserAgent,
-		Retry:            p.Retry,
+		UserAgent:            p.UserAgent,
+		Retry:                p.Retry,
+		Prompt:               p.Prompt,
+		PromptMode:           p.PromptMode,
+		PromptApplyInherited: p.PromptApplyInherited,
+		EffortOverrides:      p.EffortOverrides,
 	}
 }
 
