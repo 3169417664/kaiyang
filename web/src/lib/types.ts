@@ -686,6 +686,9 @@ export interface LLMAuditProfile {
   name: string;
   format: string;
   model: string;
+  // 该角色触发切换时的实际思考强度；缺省=未记录（如手动切换无单一角色上下文）。
+  effort?: string;
+  effort_source?: string;
 }
 
 export interface LLMTransition {
@@ -1359,6 +1362,9 @@ export interface LLMPoolMember {
   fails: number;
   trips: number;
   cooldown_secs: number;
+  // 静态资格（只读路由投影）：是否配置了 Key / 是否进入轮询链。
+  has_key?: boolean;
+  in_chain?: boolean;
   last_error?: string;
   last_at?: string;
 }
@@ -1426,6 +1432,225 @@ export interface AgentDetail {
   task_timeout_wrapup_default?: string;
   task_timeout_wrapup_max_turns?: number;
   task_timeout_wrapup_max_turns_default?: number;
+}
+
+// ---- Agent 提示词全链路（只读） ----
+// 后端只投影配置与缓存的 MCP 元数据：不建 provider、不连 MCP、不回传凭据。
+export interface PromptChainSegment {
+  key: string;
+  title: string;
+  kind: string;
+  source: string;
+  source_label: string;
+  editable: boolean;
+  gate?: string;
+  present: boolean;
+  available: boolean;
+  reason?: string;
+  order: number;
+  chars: number;
+  text: string;
+}
+
+export interface PromptChainLLM {
+  profile_id?: number | null;
+  name: string;
+  model: string;
+  format: string;
+  source: string;
+  source_label: string;
+  prompt_mode: string;
+  prompt_chars: number;
+  prompt_apply_inherited: boolean;
+  prompt_active: boolean;
+  effort?: string;
+  effort_source?: "override" | "profile" | "unset";
+}
+
+export interface PromptChainTool {
+  key: string;
+  description: string;
+  deferred: boolean;
+  gate?: string;
+}
+
+export interface PromptChainExcluded {
+  key: string;
+  reason: string;
+}
+
+export interface PromptChainTools {
+  builtin: PromptChainTool[];
+  custom: PromptChainTool[];
+  traffic: PromptChainTool[];
+  shell: PromptChainTool[];
+  deferred_names: string[];
+  excluded: PromptChainExcluded[];
+  total: number;
+}
+
+export interface PromptChainMCP {
+  id: number;
+  name: string;
+  transport: string;
+  enabled: boolean;
+  mode: "global" | "skill_gated" | "excluded";
+  skill: string;
+  health: "ok" | "failed" | "never_checked";
+  last_check_at?: string;
+  last_error?: string;
+  tool_count: number;
+  cache_stale: boolean;
+  tools: { name: string; description: string }[];
+}
+
+export interface PromptChainSkill {
+  name: string;
+  description: string;
+  in_index: boolean;
+  mcp_gated: string[];
+}
+
+export interface AgentPromptChain {
+  agent_key: string;
+  agent_kind: "builtin" | "custom";
+  llm: PromptChainLLM;
+  segments: PromptChainSegment[];
+  tools: PromptChainTools;
+  mcp: PromptChainMCP[];
+  skills: PromptChainSkill[];
+  totals: { segments: number; chars: number; est_tokens: number };
+  warnings: string[];
+  static_only: boolean;
+}
+
+// ---- LLM 路由投影（只读） ----
+export type LLMRouteAvailability = "ok" | "missing_key" | "invalid_config";
+
+export interface LLMRouteProfile {
+  id: number;
+  name: string;
+  format: string;
+  model: string;
+  priority: number;
+  pool_exclude: boolean;
+  has_key: boolean;
+  availability: LLMRouteAvailability;
+  availability_reason?: string;
+  effort?: string;
+  effort_source?: "override" | "profile" | "unset";
+}
+
+export interface LLMRouteLayer {
+  layer: "pin" | "agent_binding" | "task_chain" | "global_profile" | "environment";
+  applies_to?: string;
+  hit: boolean;
+  profile?: LLMRouteProfile;
+  reason?: string;
+}
+
+export interface LLMRouteChainEntry {
+  profile_id: number;
+  position: number;
+  status: string;
+  is_cursor: boolean;
+  last_error?: string;
+  exhausted_at?: string;
+  profile?: LLMRouteProfile;
+}
+
+export interface LLMRoutePool {
+  enabled: boolean;
+  bind_fallback: boolean;
+  order: string;
+  wraps: string;
+  members: LLMPoolMember[];
+  note: string;
+}
+
+export interface LLMRoutePolicy {
+  trigger: string;
+  does_not_trigger: string;
+  advance_rule: string;
+  same_provider_retry: string;
+  pool_selection: string;
+}
+
+export interface LLMRouteTransition {
+  id: number;
+  task_id: string;
+  created_at: string;
+  kind: string;
+  mode: "automatic" | "manual" | "exhausted" | string;
+  reason?: string;
+  summary?: string;
+  is_error: boolean;
+  previous?: LLMAuditProfile;
+  next?: LLMAuditProfile;
+}
+
+export interface LLMRouteHistory {
+  scope: "task" | "recent_tasks" | string;
+  state: "ok" | "no_records" | "error";
+  error?: string;
+  items: LLMRouteTransition[];
+  has_more: boolean;
+  earliest_cursor?: number;
+  snapshot_cursor?: number;
+  retention_note?: string;
+}
+
+export interface LLMRouteRole {
+  agent_key: string;
+  source: string;
+  available: boolean;
+  availability?: LLMRouteAvailability;
+  reason?: string;
+  profile_id?: number;
+  name?: string;
+  format?: string;
+  model?: string;
+  effort?: string;
+  effort_source?: "override" | "profile" | "unset";
+}
+
+export interface LLMRouteTaskRef {
+  id: string;
+  name?: string;
+  status?: string;
+  created_at?: number;
+  failover_state?: string;
+  failover_reason?: string;
+}
+
+export interface LLMRouteLastUsed {
+  worker: string;
+  profile_name?: string;
+  model?: string;
+  status?: string;
+  at?: string;
+}
+
+export interface AgentLLMRoute {
+  scope: "task" | "static" | string;
+  agent: { key: string; name: string; kind: string; binding: number | null };
+  task?: LLMRouteTaskRef;
+  precedence: LLMRouteLayer[];
+  roles: Record<string, LLMRouteRole>;
+  chain: LLMRouteChainEntry[];
+  active_profile_id?: number;
+  failover_state?: string;
+  failover_reason?: string;
+  pool: LLMRoutePool;
+  failover_policy: LLMRoutePolicy;
+  history: LLMRouteHistory;
+  /** 来自 llm_usage 记账的“最近一次实际使用”；仅任务视图且该泳道有记录时存在。 */
+  last_used?: LLMRouteLastUsed;
+  /** last_used 的边界说明（后端生成，前端原样展示）。 */
+  history_note?: string;
+  tasks: LLMRouteTaskRef[];
+  observed_at: string;
+  warnings: string[];
 }
 
 // ---- MCP ----

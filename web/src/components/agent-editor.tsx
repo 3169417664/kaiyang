@@ -1,8 +1,18 @@
 "use client";
 
 import * as React from "react";
+import Link from "next/link";
 import { toast } from "sonner";
-import { EyeIcon, GitCompareIcon, PencilIcon, RotateCcwIcon, SaveIcon, Trash2Icon, XIcon } from "lucide-react";
+import {
+  EyeIcon,
+  GitCompareIcon,
+  PencilIcon,
+  RotateCcwIcon,
+  SaveIcon,
+  Trash2Icon,
+  WaypointsIcon,
+  XIcon,
+} from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -306,14 +316,21 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
 
   return (
     <Tabs defaultValue="prompt" className="flex min-h-0 flex-1 flex-col">
-      <TabsList className="mx-4 mt-2 w-fit">
-        <TabsTrigger value="prompt">配置与提示词</TabsTrigger>
-        <TabsTrigger value="wrapup">收尾提示词</TabsTrigger>
-        <TabsTrigger value="mcp">MCP</TabsTrigger>
-        <TabsTrigger value="skill">Skill</TabsTrigger>
-        <TabsTrigger value="tools">Tools</TabsTrigger>
-        {isCustom && <TabsTrigger value="triggers">触发</TabsTrigger>}
-      </TabsList>
+      <div className="mx-4 mt-2 flex flex-wrap items-center justify-between gap-2">
+        <TabsList className="w-fit">
+          <TabsTrigger value="prompt">配置与提示词</TabsTrigger>
+          <TabsTrigger value="wrapup">收尾提示词</TabsTrigger>
+          <TabsTrigger value="mcp">MCP</TabsTrigger>
+          <TabsTrigger value="skill">Skill</TabsTrigger>
+          <TabsTrigger value="tools">Tools</TabsTrigger>
+          {isCustom && <TabsTrigger value="triggers">触发</TabsTrigger>}
+        </TabsList>
+        <Button asChild size="sm" variant="ghost">
+          <Link href={`/system/agents/chain?key=${encodeURIComponent(agentKey)}`}>
+            <WaypointsIcon /> 全链路
+          </Link>
+        </Button>
+      </div>
 
       {/* 配置 + 提示词 */}
       <TabsContent value="prompt" className="min-h-0 flex-1 overflow-y-auto px-4 pb-4">

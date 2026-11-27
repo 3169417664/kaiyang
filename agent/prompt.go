@@ -3,9 +3,9 @@ package agent
 import (
 	"bytes"
 	"context"
-	"strings"
 	"text/template"
 	"time"
+	"unicode/utf8"
 )
 
 // PromptOverride, if set, returns the stored system-prompt template for an agent
@@ -113,12 +113,15 @@ func renderSystemWithOverride(agentKey, def string, vars any, taskOverride strin
 //
 // Without an active overlay the output is byte-for-byte identical to before.
 func renderSystemWithOverrideProfile(agentKey, def string, vars any, taskOverride string, pp ProfilePrompt) string {
-	if strings.TrimSpace(taskOverride) != "" {
-		if out, err := renderTmpl(taskOverride, vars); err == nil {
-			return assembleSystemBody(agentKey, out, pp)
-		}
-	}
-	return renderSystemWith(agentKey, def, vars, pp)
+	return renderSystemWithOverrideSource(agentKey, def, "builtin_default", vars, taskOverride, pp)
+}
+
+// renderSystemWithOverrideSource is renderSystemWithOverrideProfile with an
+// explicit source label for the default body (builtin_default | template_default),
+// so the read-only projection can name the level the runtime actually used.
+func renderSystemWithOverrideSource(agentKey, def, defSource string, vars any, taskOverride string, pp ProfilePrompt) string {
+	segs, _ := renderSystemSegments(agentKey, def, defSource, vars, taskOverride, pp)
+	return JoinPromptSegments(segs)
 }
 
 func renderSystem(agentKey, def string, vars any) string {
@@ -126,52 +129,57 @@ func renderSystem(agentKey, def string, vars any) string {
 }
 
 func renderSystemWith(agentKey, def string, vars any, pp ProfilePrompt) string {
-	tmpl := def
-	if PromptOverride != nil {
-		if t, ok := PromptOverride(agentKey); ok && t != "" {
-			tmpl = t
+	return renderSystemWithOverrideSource(agentKey, def, "builtin_default", vars, "", pp)
+}
+
+// assembleSystemSegments is the segment form of the body/profile/skill
+// assembly. Text chunks include their separators so JoinPromptSegments
+// reproduces the historical concatenation byte for byte.
+func assembleSystemSegments(agentKey, body string, pp ProfilePrompt) []PromptSegment {
+	skill := ""
+	if SkillIndexBlock != nil {
+		skill = SkillIndexBlock(agentKey)
+	}
+	bodySeg := PromptSegment{
+		Key: "body", Title: "提示词正文", Source: "builtin_default", Editable: true,
+		Present: true, Available: true, Text: body,
+	}
+	skillSeg := PromptSegment{
+		Key: "skill_index", Title: "技能速查（宿主注入）", Source: "host",
+		Gate: "该 Agent 绑定了 Skill", Present: skill != "", Available: true,
+	}
+	if skill != "" {
+		skillSeg.Text = "\n\n" + skill
+	} else {
+		skillSeg.Reason = "该 Agent 未绑定 Skill"
+	}
+	switch {
+	case pp.Active() && pp.Mode == "replace":
+		return []PromptSegment{
+			{Key: "profile_prompt", Title: "独立提示词（LLM 配置）", Source: "profile_prompt", Present: true, Available: true, Text: pp.Text},
+			{Key: "body", Title: "提示词正文", Source: "builtin_default", Editable: true, Present: false, Available: true, Text: "", OriginalChars: utf8.RuneCountInString(body)},
+			skillSeg,
 		}
+	case pp.Active() && pp.Mode == "prepend":
+		return []PromptSegment{
+			{Key: "profile_prompt", Title: "独立提示词（LLM 配置）", Source: "profile_prompt", Present: true, Available: true, Text: pp.Text + "\n\n"},
+			bodySeg,
+			skillSeg,
+		}
+	default:
+		out := []PromptSegment{bodySeg, skillSeg}
+		if pp.Active() && pp.Mode == "append" {
+			out = append(out, PromptSegment{Key: "profile_prompt", Title: "独立提示词（LLM 配置）", Source: "profile_prompt", Present: true, Available: true, Text: "\n\n" + pp.Text})
+		}
+		return out
 	}
-	body := def
-	if out, err := renderTmpl(tmpl, vars); err == nil {
-		body = out
-	} else if out, err := renderTmpl(def, vars); err == nil {
-		body = out
-	}
-	return assembleSystemBody(agentKey, body, pp)
 }
 
 // assembleSystemBody appends the host-injected skill index and the optional
 // profile-scoped prompt. Callers append code-owned tails AFTER this, so both the
 // skill index and the hard tail survive a replace overlay.
 func assembleSystemBody(agentKey, body string, pp ProfilePrompt) string {
-	skill := ""
-	if SkillIndexBlock != nil {
-		skill = SkillIndexBlock(agentKey)
-	}
-	var b strings.Builder
-	switch {
-	case pp.Active() && pp.Mode == "replace":
-		b.WriteString(pp.Text)
-		if skill != "" {
-			b.WriteString("\n\n")
-			b.WriteString(skill)
-		}
-		return b.String()
-	case pp.Active() && pp.Mode == "prepend":
-		b.WriteString(pp.Text)
-		b.WriteString("\n\n")
-	}
-	b.WriteString(body)
-	if skill != "" {
-		b.WriteString("\n\n")
-		b.WriteString(skill)
-	}
-	if pp.Active() && pp.Mode == "append" {
-		b.WriteString("\n\n")
-		b.WriteString(pp.Text)
-	}
-	return b.String()
+	return JoinPromptSegments(assembleSystemSegments(agentKey, body, pp))
 }
 
 func renderTmpl(tmpl string, vars any) (string, error) {

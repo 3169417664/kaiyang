@@ -14,6 +14,8 @@ import type {
   Agent,
   AgentDetail,
   AgentEffortOverrides,
+  AgentLLMRoute,
+  AgentPromptChain,
   AgentTrigger,
   ArchiveBatchItem,
   Asset,
@@ -1667,6 +1669,20 @@ export const api = {
     get<{ variables: PromptVar[] }>(`/agents/${key}/variables`).then((r) => arr(r.variables)),
   previewAgentPrompt: (key: string, template: string, sample?: Record<string, string>) =>
     post<{ rendered: string; error?: string }>(`/agents/${key}/prompt/preview`, { template, sample }),
+  // 只读装配链：不连接 MCP、不建 provider，运行时段只给注入点与门控。
+  agentPromptChain: (key: string, profileId?: string) =>
+    get<AgentPromptChain>(
+      `/agents/${encodeURIComponent(key)}/prompt/chain${profileId ? `?profile_id=${encodeURIComponent(profileId)}` : ""}`,
+    ),
+  // 只读路由投影：静态来源链/池 + 任务内运行期转跳历史。不构建 provider。
+  agentLLMRoute: (key: string, opts?: { taskId?: string; limit?: number; before?: number }) => {
+    const q = new URLSearchParams();
+    if (opts?.taskId) q.set("task_id", opts.taskId);
+    if (opts?.limit) q.set("limit", String(opts.limit));
+    if (opts?.before) q.set("before", String(opts.before));
+    const qs = q.toString();
+    return get<AgentLLMRoute>(`/agents/${encodeURIComponent(key)}/llm-route${qs ? `?${qs}` : ""}`);
+  },
   getAgentVisibility: (key: string) => get<{ mcp: number[]; skill: string[] }>(`/agents/${key}/visibility`),
   setAgentVisibility: (key: string, mcp: number[], skill: string[]) =>
     put<{ ok: boolean }>(`/agents/${key}/visibility`, { mcp, skill }),
