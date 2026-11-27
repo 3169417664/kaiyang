@@ -14,6 +14,7 @@ func TestPermissionForRequestMapsCoreRoutes(t *testing.T) {
 		{http.MethodGet, "/api/tasks", "task:read", true},
 		{http.MethodPost, "/api/tasks", "task:write", true},
 		{http.MethodDelete, "/api/tasks/12", "task:delete", true},
+		{http.MethodDelete, "/api/tasks/12/artifacts/34", "task:delete", true},
 		{http.MethodGet, "/api/tasks/12/review/proposed", "review:read", true},
 		{http.MethodPost, "/api/tasks/12/review/33/approve", "review:approve", true},
 		{http.MethodGet, "/api/tasks/12/topology", "topology:read", true},
