@@ -62,6 +62,9 @@ func AugmentTools(ctx context.Context, agentKey string, base []actool.CoreTool) 
 		out = ToolResolve(ctx, agentKey, out)
 	}
 	out, def.FindingGuidance = findingWorkflowTools(agentKey, out)
+	// P2-2：schema 预算（默认关闭；设置 tool_visibility_limit / 环境变量后启用）。
+	// 放在 findingWorkflowTools 之后，确保平台补进来的写回工具也参与评估。
+	out, def = applyToolVisibility(ctx, out, def)
 	for i, t := range out {
 		out[i] = guardPanic(t)
 	}
