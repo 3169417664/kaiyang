@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+### 可观测性与离线审计（同步上游 v0.4.97/v0.4.118/v0.4.123）
+
+- **OpenTelemetry**：opt-in OTLP 追踪，默认 no-op；HTTP/任务/意图/工具 span 不记录正文/密钥。
+- **离线身份扫描**：`kaiyang-maint idscan`，只读 SQLite，统计品牌串/构建路径/控制台标题/覆盖率。
+- **MCP 工具指纹**：`tools_hash/tools_changed/tools_suspicious`，描述变化/疑似注入告警，不自动禁用。
+- **threat-modeling skill**：补齐任务早期威胁建模工作流。
+
+
 ### LLM 配置与前端 / 小程序（同步上游 v0.4.99–v0.4.121）
 
 - **LLM 配置独立提示词**：`prompt/prompt_mode/prompt_apply_inherited`，prepend/append/replace，保留技能索引与代码硬尾。
