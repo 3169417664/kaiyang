@@ -3778,6 +3778,7 @@ func (s *Server) settingsPayload() map[string]any {
 	af := autoFinishConfigFromPG(s.m.pg)
 	apc := autopilotConfigFromPG(s.m.pg)
 	ib := intentBudgetFromPG(s.m.pg)
+	tb := taskBudgetFromPG(s.m.pg)
 	return map[string]any{
 		"traffic_capture":       s.m.TrafficEnabled(),
 		"agent_traffic_binding": s.m.pg.GetBool(settingAgentTrafficBinding, false),
@@ -3817,6 +3818,11 @@ func (s *Server) settingsPayload() map[string]any {
 		// 意图级软预算（v0.4.28）：单意图 token 到顶注入收尾提醒（不杀进程）。
 		"intent_budget_enabled": ib.Enabled,
 		"intent_budget_tokens":  ib.Tokens,
+		// 任务级预算（v0.4.101）：0=不限；80% 预警、100% 收尾。
+		"task_budget_tokens":   tb.Tokens,
+		"task_budget_usd":      tb.USD,
+		"task_budget_minutes":  tb.Minutes,
+		"task_budget_warn_pct": tb.WarnPct,
 		// 证据逐字回验（v0.4.29）：off|warn|block，默认 warn。
 		"finding_evidence_verify":     evidenceVerifyModeFromPG(s.m.pg).String(),
 		"tool_output_injection_guard": injectionGuardFromPG(s.m.pg),
@@ -3915,6 +3921,11 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		// 意图级软预算（v0.4.28）：单意图 token 上限，500k–20M。
 		IntentBudgetEnabled *bool `json:"intent_budget_enabled"`
 		IntentBudgetTokens  *int  `json:"intent_budget_tokens"`
+		// 任务级预算（上游 v0.4.101）：0=不限；warn_pct 50–95。
+		TaskBudgetTokens  *int64   `json:"task_budget_tokens"`
+		TaskBudgetUSD     *float64 `json:"task_budget_usd"`
+		TaskBudgetMinutes *int     `json:"task_budget_minutes"`
+		TaskBudgetWarnPct *int     `json:"task_budget_warn_pct"`
 		// 授权边界守卫与跨任务去重（v0.4.63）。
 		ScopeWriteGuard      *bool `json:"scope_write_guard"`
 		ScopeInheritWrites   *bool `json:"scope_inherit_writes"`
@@ -4130,6 +4141,47 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := s.m.pg.SetSetting(settingIntentBudgetTokens, strconv.Itoa(*req.IntentBudgetTokens)); err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+	}
+	// 任务级预算（上游 v0.4.101）：每轮规划前读取，改完对运行中任务的下一轮生效。
+	if req.TaskBudgetTokens != nil {
+		if *req.TaskBudgetTokens != 0 && (*req.TaskBudgetTokens < 100_000 || *req.TaskBudgetTokens > 2_000_000_000) {
+			writeErr(w, 400, "task_budget_tokens 必须为 0（不限）或 100000–2000000000")
+			return
+		}
+		if err := s.m.pg.SetSetting(settingTaskBudgetTokens, strconv.FormatInt(*req.TaskBudgetTokens, 10)); err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+	}
+	if req.TaskBudgetUSD != nil {
+		if *req.TaskBudgetUSD < 0 || *req.TaskBudgetUSD > 1_000_000 {
+			writeErr(w, 400, "task_budget_usd 必须在 0–1000000（0=不限）")
+			return
+		}
+		if err := s.m.pg.SetSetting(settingTaskBudgetUSD, strconv.FormatFloat(*req.TaskBudgetUSD, 'f', -1, 64)); err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+	}
+	if req.TaskBudgetMinutes != nil {
+		if *req.TaskBudgetMinutes < 0 || *req.TaskBudgetMinutes > 10080 {
+			writeErr(w, 400, "task_budget_minutes 必须在 0–10080（0=不限）")
+			return
+		}
+		if err := s.m.pg.SetSetting(settingTaskBudgetMinutes, strconv.Itoa(*req.TaskBudgetMinutes)); err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+	}
+	if req.TaskBudgetWarnPct != nil {
+		if *req.TaskBudgetWarnPct < 50 || *req.TaskBudgetWarnPct > 95 {
+			writeErr(w, 400, "task_budget_warn_pct 必须在 50–95")
+			return
+		}
+		if err := s.m.pg.SetSetting(settingTaskBudgetWarnPct, strconv.Itoa(*req.TaskBudgetWarnPct)); err != nil {
 			writeErr(w, 500, err.Error())
 			return
 		}

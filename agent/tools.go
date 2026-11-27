@@ -1417,6 +1417,11 @@ func (t *ToolSet) addOneIntent(it intentItem) (int64, error) {
 		}
 	}
 	payload := map[string]any{"summary": summary}
+	// 持久化意图维度（显式优先，否则按 summary 推断），供离线评测统计阶段覆盖
+	// （eval.seenDimensions 读 payload.dimension）。纯附加元数据，不改变执行语义。
+	if dim := intentDimension(it.Dimension, summary); dim != "" {
+		payload["dimension"] = dim
+	}
 	if h := strings.TrimSpace(it.Hypothesis); h != "" {
 		payload["hypothesis"] = h
 	}
