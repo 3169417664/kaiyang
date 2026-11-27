@@ -569,6 +569,7 @@ func (s *Server) runConversationTurn(ctx context.Context, cancel context.CancelC
 		webSearch = a.WebSearch
 	}
 	sessionID := s.convBusyKey(c.ID) // "conv-<id>" transcript session
+	ctx = agent.WithProfilePrompt(ctx, s.profilePromptForChat(c))
 	emit := func(rec db.Activity) {
 		if _, err := pg.AppendConvActivity(c.ID, rec); err != nil {
 			log.Printf("[conv %d] append activity failed: %v", c.ID, err)

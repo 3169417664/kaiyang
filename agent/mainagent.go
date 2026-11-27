@@ -40,6 +40,18 @@ type MainAgent struct {
 	noaEnabledFn         func() bool                            // resolver: use experimental noa compaction? (nil = off)
 	maxTokensFn          func() int                             // resolver: per-reply output cap (nil/0 = send no cap)
 	programProfile       *db.ProgramProfile                     // SRC/众测 profile（nil = 不渲染）
+	profilePrompt        func() ProfilePrompt                   // LLM 配置级独立提示词（nil = 不注入）
+}
+
+// SetProfilePromptResolver wires the per-run LLM-profile overlay. nil = no
+// overlay. Read on every run so a profile prompt edit takes effect next run.
+func (m *MainAgent) SetProfilePromptResolver(fn func() ProfilePrompt) { m.profilePrompt = fn }
+
+func (m *MainAgent) promptOverlay() ProfilePrompt {
+	if m.profilePrompt == nil {
+		return ProfilePrompt{}
+	}
+	return m.profilePrompt()
 }
 
 // SetProgramProfile 注入任务级 SRC/众测 profile（v0.4.112）；nil=不渲染。
@@ -127,7 +139,11 @@ const mainAgentDefaultTmpl = `你是一个授权渗透测试系统的"主 agent"
 不要编造发现；只根据工具返回的真实数据回答。`
 
 func mainAgentSystem(goal, dataDir, workDir string) string {
-	body := renderSystem("mainagent", mainAgentDefaultTmpl, MainVars{Goal: goal, DataDir: dataDir, Now: nowStr()})
+	return mainAgentSystemWith(goal, dataDir, workDir, ProfilePrompt{})
+}
+
+func mainAgentSystemWith(goal, dataDir, workDir string, pp ProfilePrompt) string {
+	body := renderSystemWith("mainagent", mainAgentDefaultTmpl, MainVars{Goal: goal, DataDir: dataDir, Now: nowStr()}, pp)
 	// mainagent 也有 Bash 工具（基础默认工具集），会自己动手查证，
 	// 所以宿主工具清单同样要给它——不然它只能凭想象回答人。
 	out := body + artifactSpec(workDir) + engagementFraming + impactOrchestrationGuidance + srcTaskBookGuidance
@@ -171,7 +187,7 @@ func (m *MainAgent) Chat(ctx context.Context, taskID int64, mainSeg int, as *db.
 	// 共享目录注入：主 Agent 同样要能用作业/脚本/PoC 脚手架工具（见 planner 同款注释）。
 	tsx.SetRunDir(mainDir)
 	ctx = intercept.WithReviewWorkingDirectory(ctx, mainDir)
-	system, boundary := deferredSystem(mainAgentSystem(goal, m.workDir, mainDir)+ProgramProfileBlock(m.programProfile), def)
+	system, boundary := deferredSystem(mainAgentSystemWith(goal, m.workDir, mainDir, m.promptOverlay())+ProgramProfileBlock(m.programProfile), def)
 	opts := agentcore.Options{
 		Provider:        m.prov,
 		SystemPrompt:    system,

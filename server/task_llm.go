@@ -34,10 +34,16 @@ type llmAuditProfile struct {
 	Name   string `json:"name"`
 	Format string `json:"format"`
 	Model  string `json:"model"`
+	// Effort/EffortSource are the EFFECTIVE values for the role that hit the
+	// transition, resolved at emit time. Empty/absent means "not recorded" (e.g. a
+	// manual task-level switch with no single role context).
+	Effort       string `json:"effort,omitempty"`
+	EffortSource string `json:"effort_source,omitempty"`
 }
 
 type llmTransitionAudit struct {
-	Mode     string           `json:"mode"` // automatic | manual | exhausted
+	AgentKey string           `json:"agent_key,omitempty"` // role that hit the transition
+	Mode     string           `json:"mode"`                // automatic | manual | exhausted
 	Reason   string           `json:"reason"`
 	Previous *llmAuditProfile `json:"previous,omitempty"`
 	Next     *llmAuditProfile `json:"next,omitempty"`
@@ -151,14 +157,14 @@ func (r *taskLLMRuntime) current() (taskLLMSelection, error) {
 			return sel, &taskLLMError{taskID: r.taskID, chainExhausted: true, cause: errors.New("all selected profiles are quota exhausted")}
 		}
 		sel.profileID = *pt.ActiveLLMProfileID
-		prov, cfg, ok := r.s.providerForProfile(sel.profileID)
+		prov, cfg, ok := r.s.providerForAgentProfile(r.agentKey, sel.profileID)
 		if !ok {
 			return sel, fmt.Errorf("LLM profile #%d is missing or invalid", sel.profileID)
 		}
 		sel.provider, sel.retry = prov, cfg.Retry
 		return sel, nil
 	}
-	prov, cfg, ok := r.s.globalProvider()
+	prov, cfg, ok := r.s.globalProviderForAgent(r.agentKey)
 	if !ok {
 		return sel, fmt.Errorf("task %s has no available fallback LLM provider", r.taskID)
 	}
@@ -190,11 +196,11 @@ func (r *taskLLMRuntime) activeCfg() (agent.Config, bool) {
 		return cfg, true
 	}
 	if len(pt.LLMProfileIDs) > 0 && pt.ActiveLLMProfileID != nil {
-		if _, cfg, ok := r.s.providerForProfile(*pt.ActiveLLMProfileID); ok {
+		if _, cfg, ok := r.s.providerForAgentProfile(r.agentKey, *pt.ActiveLLMProfileID); ok {
 			return cfg, true
 		}
 	}
-	if _, cfg, ok := r.s.globalProvider(); ok {
+	if _, cfg, ok := r.s.globalProviderForAgent(r.agentKey); ok {
 		return cfg, true
 	}
 	return agent.Config{}, false
@@ -240,7 +246,7 @@ func (r *taskLLMRuntime) streamHooks() taskLLMStreamHooks {
 			return transition, nil
 		},
 		transition: func(selection taskLLMSelection, transition db.TaskLLMTransition, cause error) {
-			r.s.emitTaskLLMTransition(selection.task, transition, cause)
+			r.s.emitTaskLLMTransition(selection.task, r.agentKey, transition, cause)
 		},
 		withoutThinking: r.withoutThinking,
 	}
@@ -261,12 +267,12 @@ func (s *Server) configForSelection(agentKey string, sel taskLLMSelection) (agen
 	}
 	// 2) 任务链的当前 profile
 	if sel.profileID > 0 {
-		if _, cfg, ok := s.providerForProfile(sel.profileID); ok {
+		if _, cfg, ok := s.providerForAgentProfile(agentKey, sel.profileID); ok {
 			return cfg, true
 		}
 	}
 	// 3) 全局
-	if _, cfg, ok := s.globalProvider(); ok {
+	if _, cfg, ok := s.globalProviderForAgent(agentKey); ok {
 		return cfg, true
 	}
 	return agent.Config{}, false
@@ -633,11 +639,11 @@ func (s *Server) agentBindingProvider(agentKey string) (llm.Provider, agent.Conf
 	if id == nil {
 		return nil, agent.Config{}, false
 	}
-	prov, cfg, ok := s.providerForProfile(*id)
+	prov, cfg, ok := s.providerForAgentProfile(agentKey, *id)
 	if !ok {
 		return nil, agent.Config{}, false
 	}
-	return s.poolForBinding(*id, prov, cfg), cfg, true
+	return s.poolForBinding(agentKey, *id, prov, cfg), cfg, true
 }
 
 // globalProvider returns the process-wide provider (persisted active profile or
@@ -650,6 +656,31 @@ func (s *Server) globalProvider() (llm.Provider, agent.Config, bool) {
 		return nil, agent.Config{}, false
 	}
 	return s.llmProv, s.llmCfg, true
+}
+
+// globalProviderForAgent is the global fallback with a per-(agent, profile)
+// effort override applied. With no override it returns the shared global pair
+// unchanged, so the default path keeps one provider and one rate limiter. With an
+// override it builds (and pools) a provider for exactly this agent.
+func (s *Server) globalProviderForAgent(agentKey string) (llm.Provider, agent.Config, bool) {
+	if agentKey == "" || s == nil || s.m == nil || s.m.pg == nil {
+		return s.globalProvider()
+	}
+	// Any override — including one on a fallback member — means the shared global
+	// pool cannot serve this agent: its members must be built per (agent, profile).
+	overrides, err := s.m.pg.EffortOverrides(agentKey)
+	if err != nil || len(overrides) == 0 {
+		return s.globalProvider()
+	}
+	act, err := s.m.pg.ActiveProfile()
+	if err != nil || act == nil {
+		return s.globalProvider()
+	}
+	prov, cfg, ok := s.providerForAgentProfile(agentKey, act.ID)
+	if !ok {
+		return s.globalProvider()
+	}
+	return s.poolForAgent(agentKey, act.ID, prov, cfg), cfg, true
 }
 
 // taskRuntimeAvailable reports whether every listed role can resolve a provider
@@ -718,6 +749,7 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 		}
 	}
 	wk := agent.NewWorker(workerRuntime, "task-router", s.m.dir, tx, window, s.agentMaxTurns("worker"))
+	wk.SetProfilePromptResolver(func() agent.ProfilePrompt { return s.profilePromptForTaskRole(t, "worker") })
 	wk.SetScopeFlags(scopeGuard, scopeInherit, notifyDedup)
 	wk.SetProgramProfile(programProfile)
 	wk.SetFindingRecorder(s.evidenceStore())
@@ -752,6 +784,7 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 	wk.SetTaskAuthBlock(authBlock)
 	wk.SetTaskCredentialResolver(s)
 	pl := agent.NewPlanner(plannerRuntime, "task-router", s.m.dir, tx, plannerRuntime.CompactionWindow(), s.agentMaxTurns("planner"))
+	pl.SetProfilePromptResolver(func() agent.ProfilePrompt { return s.profilePromptForTaskRole(t, "planner") })
 	// 任务级提示词快照（模板库/建任务时解析）：最高优先级，只替换正文，硬尾仍由代码追加。
 	if s.m.PG() != nil {
 		if id64, err := strconv.ParseInt(t.ID, 10, 64); err == nil {
@@ -809,6 +842,7 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 	compactor.SetMaxBlockMembers(s.m.CompactionMaxMembers())
 	pl.SetCompactor(compactor)
 	main := agent.NewMainAgent(mainRuntime, "task-router", s.m.dir, tx, mainRuntime.CompactionWindow(), s.agentMaxTurns("mainagent"))
+	main.SetProfilePromptResolver(func() agent.ProfilePrompt { return s.profilePromptForTaskRole(t, "mainagent") })
 	main.SetScopeFlags(scopeGuard, scopeInherit, notifyDedup)
 	main.SetProgramProfile(programProfile)
 	main.SetFindingRecorder(s.evidenceStore())
@@ -840,14 +874,14 @@ func (s *Server) syncTaskLLMState(pt *db.Task) {
 	s.m.mu.Unlock()
 }
 
-func (s *Server) emitTaskLLMTransition(t *Task, transition db.TaskLLMTransition, cause error) {
+func (s *Server) emitTaskLLMTransition(t *Task, agentKey string, transition db.TaskLLMTransition, cause error) {
 	if t == nil {
 		return
 	}
-	previous := s.llmAuditProfile(transition.PreviousProfileID)
+	previous := s.llmAuditProfileFor(agentKey, transition.PreviousProfileID)
 	var next *llmAuditProfile
 	if transition.NextProfileID != nil {
-		next = s.llmAuditProfile(*transition.NextProfileID)
+		next = s.llmAuditProfileFor(agentKey, *transition.NextProfileID)
 	}
 	mode := "automatic"
 	kind := "llm_switch"
@@ -860,13 +894,20 @@ func (s *Server) emitTaskLLMTransition(t *Task, transition db.TaskLLMTransition,
 		summary += "，配置链已耗尽"
 	}
 	metadata, _ := json.Marshal(llmActivityMetadata{LLMTransition: llmTransitionAudit{
-		Mode: mode, Reason: cause.Error(), Previous: previous, Next: next,
+		AgentKey: agentKey, Mode: mode, Reason: cause.Error(), Previous: previous, Next: next,
 	}})
 	s.engine.emitActivity(t, db.Activity{Worker: "system", Kind: kind, IsError: transition.ChainExhausted, Summary: summary, Detail: cause.Error(), Metadata: metadata})
 	log.Printf("[llm-failover] task %s: %s", t.ID, summary)
 }
 
 func (s *Server) llmAuditProfile(id int64) *llmAuditProfile {
+	return s.llmAuditProfileFor("", id)
+}
+
+// llmAuditProfileFor snapshots a profile plus the effective effort this role runs
+// it at. agentKey=="" (manual task-level switch) leaves effort unrecorded rather
+// than guessing one.
+func (s *Server) llmAuditProfileFor(agentKey string, id int64) *llmAuditProfile {
 	if id <= 0 || s.m == nil || s.m.pg == nil {
 		return nil
 	}
@@ -874,7 +915,11 @@ func (s *Server) llmAuditProfile(id int64) *llmAuditProfile {
 	if err != nil || p == nil {
 		return &llmAuditProfile{ID: id, Name: fmt.Sprintf("配置 #%d", id)}
 	}
-	return &llmAuditProfile{ID: p.ID, Name: p.Name, Format: p.Format, Model: p.Model}
+	out := &llmAuditProfile{ID: p.ID, Name: p.Name, Format: p.Format, Model: p.Model}
+	if agentKey != "" {
+		out.Effort, out.EffortSource = s.resolveEffort(agentKey, p)
+	}
+	return out
 }
 
 func llmAuditProfileLabel(profile *llmAuditProfile) string {

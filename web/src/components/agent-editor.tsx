@@ -26,7 +26,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { Markdown } from "@/components/markdown";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import type { Agent, AgentDetail, AgentTrigger, MCPServer, PromptVar, PromptVersion, Settings, SkillItem, Tool } from "@/lib/types";
+import type { Agent, AgentDetail, AgentEffortOverrides, AgentTrigger, MCPServer, PromptVar, PromptVersion, Settings, SkillItem, Tool } from "@/lib/types";
 
 // Traffic tools are host tools gated by the global 流量捕获 switch: bindable, but
 // only usable when capture is on. Keep this list in sync with traffic.SeedToolMetas.
@@ -55,6 +55,8 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
   // "" = 跟随(未绑定)；否则为 profile id 字符串
   const [llmProfileId, setLlmProfileId] = React.useState("");
   const [llmProfiles, setLlmProfiles] = React.useState<NonNullable<AgentDetail["llm_profiles"]>>([]);
+  // 该 Agent 对各配置的思考强度覆盖（override → profile → unset）。
+  const [effortData, setEffortData] = React.useState<AgentEffortOverrides | null>(null);
   const [webSearch, setWebSearch] = React.useState(false);
   const [interactiveShell, setInteractiveShell] = React.useState(false);
   const [localExec, setLocalExec] = React.useState(true);
@@ -113,6 +115,12 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
   React.useEffect(() => {
     reload();
   }, [reload]);
+  const loadEffort = React.useCallback(() => {
+    api.agentEffortOverrides(agentKey).then(setEffortData).catch(() => setEffortData(null));
+  }, [agentKey]);
+  React.useEffect(() => {
+    loadEffort();
+  }, [loadEffort]);
 
   async function doPreview() {
     try {
@@ -199,6 +207,18 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
       toast.error(`保存失败：${(e as Error).message}`);
     }
   }
+  // 覆盖只对「当前实际服务该 Agent 的配置」生效：显式绑定用绑定的配置，
+  // 跟随模式用全局激活配置。空值 = 清除覆盖，回到配置自身强度。
+  async function changeEffortOverride(profileId: number, effort: string) {
+    try {
+      if (effort === "") await api.deleteAgentEffortOverride(agentKey, profileId);
+      else await api.saveAgentEffortOverride(agentKey, profileId, effort);
+      toast.success(effort === "" ? "已清除思考强度覆盖" : `思考强度覆盖已保存：${effort}`);
+      loadEffort();
+    } catch (e) {
+      toast.error(`保存失败：${(e as Error).message}`);
+    }
+  }
   // applyVis optimistically updates, persists, and toasts success/failure. On
   // failure it reverts to the prior selection so the UI never lies about state.
   async function applyVis(nextMcp: number[], nextSkill: string[], okMsg: string) {
@@ -272,6 +292,17 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
   const showLLM = true;
   // triggers (P3) only attach to custom agents.
   const isCustom = !!detail && !detail.agent?.builtin;
+  const effortTarget = React.useMemo(() => {
+    if (!effortData) return null;
+    const wanted = llmProfileId ? Number(llmProfileId) : null;
+    return (
+      effortData.profiles.find((p) => (wanted != null ? p.profile_id === wanted : p.is_default)) ??
+      null
+    );
+  }, [effortData, llmProfileId]);
+  const otherOverrides = (effortData?.profiles ?? []).filter(
+    (p) => p.source === "override" && p.profile_id !== effortTarget?.profile_id,
+  );
 
   return (
     <Tabs defaultValue="prompt" className="flex min-h-0 flex-1 flex-col">
@@ -310,6 +341,54 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
                       为该 Agent 绑定固定 LLM 配置（点「保存配置」生效）。优先级：Agent 绑定 &gt; 任务/会话指定 &gt; 全局激活。
                     </span>
                   </div>
+                  <div className="flex flex-wrap items-center gap-3 border-t pt-3">
+                    <Label className="text-xs">思考强度覆盖</Label>
+                    <Select
+                      value={effortTarget?.source === "override" ? effortTarget.effort : "__follow__"}
+                      onValueChange={(v) => {
+                        if (!effortTarget) return;
+                        void changeEffortOverride(effortTarget.profile_id, v === "__follow__" ? "" : v);
+                      }}
+                      disabled={!effortTarget}
+                    >
+                      <SelectTrigger className="h-8 w-56">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="__follow__">
+                          跟随配置自身{effortTarget?.profile_effort ? `（${effortTarget.profile_effort}）` : "（未设置）"}
+                        </SelectItem>
+                        {["low", "medium", "high", "xhigh", "max"].map((v) => (
+                          <SelectItem key={v} value={v}>
+                            {v}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <span className="max-w-md text-muted-foreground text-xs">
+                      {effortTarget
+                        ? `作用于「${effortTarget.name}」；覆盖优先于配置自身强度，立即生效。`
+                        : "当前没有可用的全局激活配置；绑定一个配置后可在此覆盖其思考强度。"}
+                    </span>
+                  </div>
+                  {otherOverrides.length > 0 && (
+                    <div className="flex flex-wrap items-center gap-2 border-t pt-3">
+                      <span className="text-muted-foreground text-xs">其他配置的覆盖：</span>
+                      {otherOverrides.map((p) => (
+                        <Badge key={p.profile_id} variant="secondary" className="gap-1">
+                          {p.name}: {p.effort}
+                          <button
+                            type="button"
+                            className="text-muted-foreground hover:text-foreground"
+                            onClick={() => void changeEffortOverride(p.profile_id, "")}
+                            aria-label={`清除 ${p.name} 的思考强度覆盖`}
+                          >
+                            ×
+                          </button>
+                        </Badge>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
               <div className="flex flex-wrap items-end gap-3">

@@ -1842,9 +1842,17 @@ type ActivitySessionFilter struct {
 	NodeID  *int64
 	Main    bool // main-agent session
 	MainSeg *int // segment for the main session (nil == current, resolved by caller; 0 == original)
+	// Kinds restricts the page to these activity kinds (e.g. llm_switch /
+	// llm_failover for the read-only route history). When set it takes precedence
+	// over the session selectors: the route view needs a cross-session kind filter,
+	// not a session.
+	Kinds []string
 }
 
 func (f ActivitySessionFilter) cond(argStart int) (string, []any) {
+	if len(f.Kinds) > 0 {
+		return fmt.Sprintf(" AND kind = ANY($%d)", argStart), []any{f.Kinds}
+	}
 	switch {
 	case f.NodeID != nil:
 		return fmt.Sprintf(" AND node_id=$%d", argStart), []any{*f.NodeID}

@@ -1275,6 +1275,34 @@ export interface LLMProfile {
   user_agent?: string;
   // 本配置对重试的覆盖（建连/空响应/同 provider 安全窗口）。留空/全 0 = 跟随全局策略。
   retry?: LLMRetryOverride;
+  // 独立提示词：纯文本。'' = 未配置；mode ∈ '' | prepend | append | replace。
+  // 只有 Agent 显式绑定或会话固定本配置时总会注入；任务链/全局选路需要
+  // prompt_apply_inherited=true 才注入。
+  prompt?: string;
+  prompt_mode?: "" | "prepend" | "append" | "replace";
+  prompt_apply_inherited?: boolean;
+  // 反向引用：哪些 Agent 覆盖了本配置的思考强度（只读）。
+  effort_overrides?: { agent_key: string; reasoning_effort: string; updated_at: string }[];
+}
+
+// ---- Agent × LLM 思考强度覆盖 ----
+export interface AgentEffortProfile {
+  profile_id: number;
+  name: string;
+  format: string;
+  model: string;
+  is_default: boolean;
+  has_key: boolean;
+  profile_effort: string;
+  effort: string;
+  source: "override" | "profile" | "unset";
+  updated_at?: string;
+}
+
+export interface AgentEffortOverrides {
+  agent_key: string;
+  overrides: { profile_id: number; reasoning_effort: string; updated_at?: string }[];
+  profiles: AgentEffortProfile[];
 }
 
 // ---- LLM 重试策略 ----
