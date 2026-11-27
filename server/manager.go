@@ -358,6 +358,9 @@ type Manager struct {
 const (
 	settingTrafficCapture      = "traffic_capture"
 	settingAgentTrafficBinding = "agent_traffic_binding"
+	// settingToolVisibilityLimit 是工具 schema 可见上限（上游 v0.4.117 P2-2）。
+	// 0/未设置=关闭（全量可见）；20–40 启用后其余工具走 deferred + BM25 search_tools。
+	settingToolVisibilityLimit = "tool_visibility_limit"
 	settingWebSearchOn         = "web_search_enabled"
 	settingWebSearchBackend    = "web_search_backend"
 	settingBraveKey            = "brave_search_api_key"

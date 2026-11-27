@@ -631,6 +631,8 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	// 收敛工具面、减少低价值调用。其余 SDK 默认工具(Read/Write/Edit/LS/Bash/Sleep)照常。
 	base = append(base, defaultToolsExcept("MultiEdit", "Glob", "Grep")...)
 	ctx = WithRunInfo(ctx, RunInfo{TaskID: taskID, ExplorationID: explorationID(ts), IntentID: intent.ID, Kind: KindWorker})
+	// P2-2：意图自身文本作为 BM25 查询（不含工具输出，目标无法影响排序）。
+	ctx = WithToolQuery(ctx, intentToolQuery(intent))
 	tools, def, cleanup := AugmentTools(ctx, w.agentKey, base)
 	defer cleanup()
 
@@ -690,6 +692,8 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	// 终态经验（v0.4.100）：同维度/同资产上已经失败或零产出的方向，引擎在终态
 	// 自动沉淀；worker 开局先看，避免重复同一种打法。
 	sysBody += recentLessonsBlock(ts, intent, 3)
+	// P2-1 工具路由：同维度历史工具错误率，提示 worker 别重复高错误率打法。
+	sysBody += toolRoutingBlock(ts, intent, 5)
 	// 自主推进：本意图必须被证实/证伪，不得空转收场。
 	sysBody += autopilotTail(ctx, autopilotWorkerGuidance)
 	sysBody += "\n\n开始执行上面这条意图：只做它、只产生事实、assets、finding、做完即停。"

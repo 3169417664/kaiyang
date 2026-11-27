@@ -3783,6 +3783,8 @@ func (s *Server) settingsPayload() map[string]any {
 	return map[string]any{
 		"traffic_capture":       s.m.TrafficEnabled(),
 		"agent_traffic_binding": s.m.pg.GetBool(settingAgentTrafficBinding, false),
+		// 工具 schema 可见上限（P2-2）：0=关闭（默认，全量可见）；>0 启用 deferred + BM25。
+		"tool_visibility_limit": toolVisibilityLimitFromPG(s.m.pg),
 		"llm_record":            s.m.LLMRecordEnabled(),
 		"web_search_enabled":    on,
 		"web_search_backend":    backend,
@@ -3846,6 +3848,23 @@ func (s *Server) settingsPayload() map[string]any {
 		"egress_hint":     egressHint(s.m.pg),
 		"egress_port_map": egressPortMap(s.m.pg),
 	}
+}
+
+// toolVisibilityLimitFromPG 读工具 schema 可见上限；未设置/非法/<=0 时回显 0（关闭）。
+// 与 agent 侧的回退顺序保持一致：DB 设置 > 环境变量 > 关闭，但设置页只展示 DB 值。
+func toolVisibilityLimitFromPG(pg *db.DB) int {
+	if pg == nil {
+		return 0
+	}
+	v, ok, _ := pg.GetSetting(settingToolVisibilityLimit)
+	if !ok {
+		return 0
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil || n <= 0 {
+		return 0
+	}
+	return n
 }
 
 // notifyPublicBaseURL 读推送回链用的外部地址。
@@ -3953,6 +3972,8 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		ConstraintsInjectWorker  *bool `json:"constraints_inject_worker"`
 		// 实验功能:noa 上下文压缩开关(默认关);每 run 读,对之后启动的 run 生效,无需重建 agent。
 		NoaCompaction *bool `json:"noa_compaction"`
+		// 工具 schema 可见上限（P2-2）。0=关闭（默认），20–40 启用；每 run 读取即时生效。
+		ToolVisibilityLimit *int `json:"tool_visibility_limit"`
 		// 漏洞 IM 推送的全局项。三者都由投递引擎每轮读一次，改完即时生效，
 		// 不需要重建 agent 或重启。
 		NotifyEnabled    *bool   `json:"notify_enabled"`
@@ -3966,6 +3987,17 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, 400, err.Error())
 		return
+	}
+	if req.ToolVisibilityLimit != nil {
+		n := *req.ToolVisibilityLimit
+		if n < 0 || n > 200 {
+			writeErr(w, 400, "tool_visibility_limit 必须在 0–200 之间（0=关闭，建议 20–40）")
+			return
+		}
+		if err := s.m.pg.SetSetting(settingToolVisibilityLimit, strconv.Itoa(n)); err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
 	}
 	if req.ConstraintsInjectPlanner != nil {
 		if err := s.m.pg.SetBool(settingConstraintsInjectPlanner, *req.ConstraintsInjectPlanner); err != nil {

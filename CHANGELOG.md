@@ -4,6 +4,18 @@
 
 ## [Unreleased]
 
+### 工具路由与可见性（同步上游 v0.4.114/115/117）
+
+- **工具可见性上限 + BM25 搜索（P2-2）**：默认关闭（`tool_visibility_limit=0`，全量可见）；
+  设为 20–40 后写回/核心工具始终可见，其余领域工具按任务/意图文本 BM25 选出 top N，剩余进入
+  SDK deferred（schema 不进 prompt，只列名字），并追加只读 `search_tools` 返回
+  name/description/schema/deferred。环境变量回退支持 `KAIYANG_TOOL_VISIBILITY_LIMIT`
+  与 `POJUN_TOOL_VISIBILITY_LIMIT`。只改 schema 预算，不改注册/权限/执行。
+- **维度级工具路由学习（P2-1）**：`db.ToolOutcomeStats` / `db.HighErrorTools` 按
+  「意图维度 × 工具」聚合 `activity` 与 `intent_reflections`；worker 启动时若同维度
+  ≥2 个工具且 ≥8 次调用，注入「本维度工具表现（历史，仅参考）」并单列高错误率工具
+  （≥5 次、错误率 ≥60%）。只读提示，不拦截、不降权；样本不足时提示词逐字不变。
+
 ### 运维可靠性（同步上游 v0.4.100–v0.4.120）
 
 - **MCP 启动健康检查**：记录 `last_check_at/last_ok/last_error/last_latency_ms/tool_count`，
